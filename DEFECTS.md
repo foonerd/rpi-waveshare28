@@ -149,6 +149,34 @@ TLS.
 
 ## Open defects
 
+### Volumio's network notifier is not always present
+
+`docs/BOOT-FLOW.md` treats `/tmp/networkstatus` as a reliable push channel.
+On a running Volumio 4.194 box it did not exist at all:
+
+    $ cat /tmp/networkstatus
+    cat: /tmp/networkstatus: No such file or directory
+
+`wstatus()` in `wireless.js` is only called from `updateNetworkState()`, so if
+that path has not run this boot the file is never created. The renderer falls
+back to a two second timer, which is why the symptom was invisible, but the
+change detection is running on the fallback rather than the intended path.
+
+Open: whether it appears on a box that goes through a wireless state change,
+or whether the code path is unreachable in normal operation.
+
+### /data/wlan0status persists across boots and goes stale
+
+Observed: `hotspot` while `wlan0` was DOWN with no address and `eth0` held a
+normal LAN address.
+
+It is on the data partition, so it survives reboots, and nothing clears it
+when the mode it describes ends. It is a record of the last state the daemon
+set, not a statement about now.
+
+The renderer therefore treats real addresses as authoritative and uses the
+status file only when there are none.
+
 ### Repeated album art fetches
 
 rustls handshake logs appeared roughly twice a second for a station whose

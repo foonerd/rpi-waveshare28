@@ -1,8 +1,10 @@
 # Boot and status flow
 
-Design proposal. Not implemented. Written before code because the previous
-attempt bricked the device twice, and the failures were in sequencing rather
-than in logic.
+Implemented. Written before the code because the previous attempt bricked the
+device twice, and the failures were in sequencing rather than in logic.
+
+Corrections made after measurement are marked inline rather than edited away,
+because two of the original assumptions turned out to be wrong on hardware.
 
 ---
 
@@ -53,9 +55,23 @@ are written during exactly the window this display has to fill.
 
 The comment on `refreshNetworkStatusFile()` is explicit: the mtime is touched
 to trigger a watch. This is a push notification channel that already exists,
-is maintained by the same author as this repository, and is authoritative.
+is maintained by the same author as this repository, and is authoritative
+when present.
 
-Polling `getifaddrs` on a timer would be second-guessing it.
+Two caveats, both found after this was written and both recorded in
+`DEFECTS.md`:
+
+- `/tmp/networkstatus` did not exist at all on a running Volumio 4.194 box.
+  `wstatus()` is only reached from `updateNetworkState()`, so the file is
+  absent until a wireless state change occurs. The implementation therefore
+  keeps a two second fallback timer rather than depending on it.
+- `/data/wlan0status` is on the data partition and survives reboots. It was
+  observed reporting `hotspot` while `wlan0` was down and `eth0` held a normal
+  address. It records the last state the daemon set, not the current one.
+
+So the notifier is worth consuming where it exists, but not worth trusting
+alone. Real addresses from the kernel are authoritative; the status files
+resolve what to show when there are none.
 
 ### The hotspot SSID comes from the file hostapd actually reads
 
@@ -198,10 +214,21 @@ which is what the discarded implementation did.
 
 ## Hotspot
 
-Detected from `/data/wlan0status` containing `hotspot`, which is what
-`wireless.js` writes in AP mode. `192.168.211.1` on a wireless interface is a
-corroborating signal and is what Volumio's own `network_monitor.sh` uses, but
-the status file is the daemon's own statement of intent and is preferred.
+The access point is shown only when there is no other usable address.
+
+Hotspot fallback and a working ethernet coexist routinely: the wireless daemon
+brings up an access point when it cannot join a network, while ethernet
+carries on with a perfectly good address. Volumio's own `network_monitor.sh`
+treats the hotspot address as "not connected" but still reports ethernet
+separately, and this follows that.
+
+An earlier implementation checked hotspot mode first and returned before
+looking at addresses, which hid the LAN address on exactly that arrangement.
+
+Detection is `/data/wlan0status` containing `hotspot`, with the presence of
+`192.168.211.1` as a fallback for the case where the file has not been
+written. `192.168.211.1` is excluded from the address list itself, since
+listing it beside real addresses would be misleading.
 
 When in hotspot mode the screen shows:
 
@@ -315,10 +342,13 @@ timing was measured on the device tonight rather than reasoned about.
 
 ## Open questions before implementation
 
-1. Whether the splash unit is kept at all. It cannot work, because Plymouth
-   binds before the framebuffer exists. Keeping it costs an fbtft load and
-   unload for nothing. Removing it means no branding until the initramfs
-   question is answered in `volumio-os`.
-2. Whether the panel should show anything between the renderer starting and
-   the first address appearing. Proposed: hostname plus "waiting for network",
-   which is at least evidence the board is alive.
+Both resolved. The splash unit is not kept: Plymouth binds before the
+framebuffer exists, so it cost an fbtft load and unload for nothing. Between
+the renderer starting and the first address arriving the panel shows the
+hostname and "waiting for network", which is at least evidence the board is
+alive.
+
+Still open, and outside this repository: whether a splash is worth an
+initramfs hook in `volumio-os`. `volumio-plymouth-adaptive` already ships an
+init-premount hook, so the mechanism exists; what is untested is whether
+`dtoverlay` or a direct configfs write works that early.

@@ -20,7 +20,11 @@ any Pi defconfig, on 6.1, 6.6 or 6.12. No module ships. There is also no
 hynitron or CST overlay upstream.
 
 Only needed if you want a kernel input device. The userspace renderer in
-`runtime/` reads the CST328 over i2cdev and needs none of this.
+`runtime/` reads the CST328 over i2cdev and needs none of this, and is the
+supported path.
+
+As of the last hardware test the module binds but probe fails; see Binding
+below. Nothing here is required for a working panel.
 
 ## Layout
 
@@ -95,9 +99,28 @@ probe, `0xD000` onward is the touch report in the layout the driver parses,
 `0xD006` is the fixed `0xAB` marker, `0xD1` command writes select the debug and
 normal reporting modes.
 
-That is a paper comparison. If probe fails with `ic mismatch, chkcode is ...`
-then the check code differs on real silicon and a `hynitron,cst328` entry has
-to be added to the driver. See `patch/README.md`.
+### Measured result on CST328 silicon
+
+The module loads and binds. Probe then fails, but earlier than the identity
+check this section predicted:
+
+    Hynitron-TS 1-001a: cst3xx_bootloader_enter unable to enter bootloader mode
+
+No input device is registered. `/dev/input/event*` is absent.
+
+So the paper comparison above was correct as far as it went, and irrelevant:
+the driver never reaches the `0xCACA` test. `cst3xx_bootloader_enter` sends a
+sequence the CST328 does not accept, and everything after it is unreachable.
+
+What that means for a patch is not yet established. It may be that the CST328
+needs a different entry sequence, or that it needs no bootloader entry at all
+and the firmware update path should be skipped for this part. Determining
+which needs the CST328 datasheet section on bootloader mode read against
+`cst3xx_bootloader_enter` in `hynitron_cstxxx.c`, not a guess. See
+`patch/README.md`.
+
+The userspace renderer in `runtime/` is unaffected: it talks to the controller
+over i2cdev and does not use this driver.
 
 ## Overlay parameters
 
@@ -124,8 +147,8 @@ eye.
     ls /dev/input/event*
     evtest
 
-A successful probe registers an input device. A failed identity check logs
-`ic mismatch, chkcode is ...` and returns -ENODEV.
+A successful probe registers an input device. As of the last test on CST328
+silicon it does not: see the measured result under Binding.
 
 ## Licence
 
