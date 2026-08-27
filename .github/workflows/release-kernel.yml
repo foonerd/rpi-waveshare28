@@ -91,7 +91,7 @@ jobs:
         shell: bash
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             kernel/output/cst328-rpi-${{ steps.kver.outputs.kver }}.tar.gz
