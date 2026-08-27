@@ -136,25 +136,100 @@ fn join(base: &str, path: &str) -> String {
 
 fn fetch(url: &str, size: u32, timeout: Duration) -> Result<Art> {
     let bytes = http::get_bytes(url, timeout)?;
+    decode(&bytes, size)
+}
 
-    // Dispatch on the magic bytes rather than on Content-Type. Volumio proxies
-    // art for streams, so the declared type is whatever the upstream server
-    // said, and that is not always what the bytes are.
-    let format = image::guess_format(&bytes).context("unrecognised image format")?;
-    let img = image::load_from_memory_with_format(&bytes, format).context("decoding")?;
+/// Turn fetched bytes into a scaled cover.
+///
+/// Raster formats are dispatched on the magic bytes rather than on
+/// Content-Type: art is served by whatever server the stream points at, and
+/// the declared type is not always what the bytes are. SVG is tried only
+/// after that, since it has no magic number worth trusting.
+fn decode(bytes: &[u8], size: u32) -> Result<Art> {
+    match image::guess_format(bytes) {
+        Ok(format) => decode_raster(bytes, format, size),
+        Err(e) => {
+            if looks_like_svg(bytes) {
+                decode_svg(bytes, size)
+            } else {
+                Err(anyhow::Error::new(e).context("unrecognised image format"))
+            }
+        }
+    }
+}
+
+/// True if the bytes plausibly start an SVG document.
+///
+/// Checked rather than assumed, so a truncated download or an HTML error page
+/// is reported as an unrecognised format instead of being handed to the XML
+/// parser to fail obscurely. Gzipped SVG (`.svgz`) starts with the gzip magic
+/// and is handled by usvg itself.
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return true;
+    }
+    let head = &bytes[..bytes.len().min(512)];
+    let text = String::from_utf8_lossy(head);
+    let text = text.trim_start();
+    text.starts_with("<?xml") || text.starts_with("<svg") || text.contains("<svg")
+}
+
+fn decode_raster(bytes: &[u8], format: image::ImageFormat, size: u32) -> Result<Art> {
+    let img = image::load_from_memory_with_format(bytes, format).context("decoding")?;
 
     // Fit inside the box preserving aspect: a stretched cover looks worse than
     // a smaller one. Triangle rather than nearest because covers are
-    // photographic and nearest produces visible aliasing on a 200 px box.
-    let img = img.resize(size, size, FilterType::Triangle).to_rgb8();
+    // photographic and nearest produces visible aliasing at this size.
+    let img = img.resize(size, size, FilterType::Triangle).to_rgba8();
     let (w, h) = img.dimensions();
 
-    let px = img
-        .pixels()
-        .map(|p| Rgb565::new(p[0] >> 3, p[1] >> 2, p[2] >> 3))
+    // Composite over black rather than discarding alpha. Station logos are
+    // routinely transparent PNGs drawn for a light background; dropping the
+    // alpha channel leaves whatever colour happens to sit under it, which is
+    // often black on black.
+    let px = img.pixels().map(|p| blend_on_black(p.0)).collect();
+
+    Ok(Art { w, h, px })
+}
+
+fn decode_svg(bytes: &[u8], size: u32) -> Result<Art> {
+    let opt = resvg::usvg::Options::default();
+    let tree = resvg::usvg::Tree::from_data(bytes, &opt).context("parsing svg")?;
+
+    let svg_size = tree.size();
+    if svg_size.width() <= 0.0 || svg_size.height() <= 0.0 {
+        anyhow::bail!("svg has no size");
+    }
+
+    // Rasterise straight to the target size. Unlike a bitmap there is no
+    // resampling loss: the vector is drawn at the size it will be shown.
+    let scale = (size as f32 / svg_size.width()).min(size as f32 / svg_size.height());
+    let w = (svg_size.width() * scale).round().max(1.0) as u32;
+    let h = (svg_size.height() * scale).round().max(1.0) as u32;
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).context("allocating svg raster target")?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+
+    // Pixmap data is premultiplied RGBA, so compositing over black is just
+    // taking the colour channels as they stand.
+    let px = pixmap
+        .data()
+        .chunks_exact(4)
+        .map(|c| Rgb565::new(c[0] >> 3, c[1] >> 2, c[2] >> 3))
         .collect();
 
     Ok(Art { w, h, px })
+}
+
+/// Composite a straight-alpha RGBA pixel over black.
+fn blend_on_black(p: [u8; 4]) -> Rgb565 {
+    let a = u32::from(p[3]);
+    let ch = |v: u8| ((u32::from(v) * a) / 255) as u8;
+    Rgb565::new(ch(p[0]) >> 3, ch(p[1]) >> 2, ch(p[2]) >> 3)
 }
 
 #[cfg(test)]
@@ -180,6 +255,38 @@ mod tests {
         assert_eq!(
             join("http://localhost:3000", "https://cdn.example/logo.png"),
             "https://cdn.example/logo.png"
+        );
+    }
+
+    #[test]
+    fn recognises_svg() {
+        assert!(looks_like_svg(
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(looks_like_svg(b"  \n<?xml version=\"1.0\"?><svg/>"));
+        assert!(looks_like_svg(&[0x1f, 0x8b, 0x08, 0x00]));
+    }
+
+    #[test]
+    fn rejects_non_svg_text() {
+        assert!(!looks_like_svg(b"<html><body>404</body></html>"));
+        assert!(!looks_like_svg(b"not markup at all"));
+    }
+
+    #[test]
+    fn blends_alpha_over_black() {
+        // Expected values built with `new` rather than the RgbColor trait
+        // constants: this asserts the actual 5-6-5 encoding the function
+        // produces, not that two named constants happen to agree.
+        assert_eq!(
+            blend_on_black([255, 255, 255, 255]),
+            Rgb565::new(31, 63, 31)
+        );
+        assert_eq!(blend_on_black([255, 255, 255, 0]), Rgb565::new(0, 0, 0));
+        // Half alpha halves each channel before the bit-depth reduction.
+        assert_eq!(
+            blend_on_black([255, 255, 255, 128]),
+            Rgb565::new(16, 32, 16)
         );
     }
 }

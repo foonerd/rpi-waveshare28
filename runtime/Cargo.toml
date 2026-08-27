@@ -24,7 +24,13 @@ gpio-cdev = "0.6"
 # Album art. Volumio's /albumart serves PNG for local files and proxies
 # whatever a stream provides, so both codecs are needed. default-features off
 # keeps the other twenty formats and their dependencies out of the tree.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# SVG. Several BBC stations serve their logo as SVG, which is a vector
+# document to rasterise rather than an image format to decode, so the `image`
+# crate cannot help. default-features off drops fontdb, rustybuzz and the
+# unicode crates, which is most of the weight; station logos are shapes, and
+# an SVG containing text renders without it rather than failing.
+resvg = { version = "0.48", default-features = false }
 # TLS, for album art on streaming services.
 #
 # rustls under the existing src/http.rs rather than an HTTP client crate:
