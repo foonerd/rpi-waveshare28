@@ -1,0 +1,103 @@
+# Check every push and pull request. Nothing here publishes.
+#
+# The kernel half is deliberately not built here: it compiles four complete
+# kernels and takes far too long to sit in front of a push. It is verified by
+# the release-kernel workflow on tag, and by the toolchain gate in
+# download_build.sh, which fails in seconds rather than after an hour.
+#
+# The shell scripts are linted instead, which is the part of the kernel half
+# that actually changes between releases.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  runtime:
+    name: runtime (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - armv7-unknown-linux-musleabihf
+          - aarch64-unknown-linux-musl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build
+        working-directory: runtime
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Report size
+        working-directory: runtime
+        run: ls -l "target/${{ matrix.target }}/release/waveshare28-panel"
+
+  lint:
+    name: fmt, clippy, tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Formatting
+        working-directory: runtime
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: runtime
+        # Warnings are failures. A warning that is allowed to persist stops
+        # being read, and then the next one is invisible.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: runtime
+        # Host target: the unit tests cover URL parsing and response splitting,
+        # neither of which is architecture dependent, and running them under
+        # qemu would buy nothing.
+        run: cargo test
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Check scripts
+        run: |
+          shellcheck \
+            scripts/install.sh \
+            kernel/build-script/download_build.sh \
+            kernel/build-script/re-build.sh \
+            kernel/build-script/install_deps_gcc_11.sh
+
+      - name: Check executable bits
+        # A script committed without its executable bit fails at the worst
+        # possible moment, on someone else's machine.
+        run: |
+          fail=0
+          for f in scripts/install.sh kernel/build-script/*.sh; do
+            mode="$(git ls-files -s "$f" | awk '{print $1}')"
+            if [ "$mode" != "100755" ]; then
+              echo "not executable in git: $f (mode $mode)"
+              fail=1
+            fi
+          done
+          exit $fail

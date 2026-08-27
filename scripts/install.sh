@@ -119,7 +119,7 @@ install_kernel() {
     tag="kernel-${kver}"
     url="${RELEASE_BASE}/${tag}/cst328-rpi-${kver}.tar.gz"
 
-    log "running kernel ${kernel_release()}, looking for release ${tag}"
+    log "running kernel $(kernel_release), looking for release ${tag}"
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' RETURN
@@ -146,7 +146,7 @@ install_kernel() {
     cp -a "${root}/lib/." /lib/
     cp -a "${root}/boot/." /boot/
 
-    log "running depmod for ${kernel_release()}"
+    log "running depmod for $(kernel_release)"
     depmod -a "$(kernel_release)"
 
     ensure_config_line "dtoverlay=cst328"
