@@ -1,0 +1,39 @@
+[package]
+name = "waveshare28-panel"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/foonerd/rpi-waveshare28"
+description = "Userspace renderer and touch reader for the Waveshare 2.8 inch SPI LCD (ST7789V + CST328) on Raspberry Pi"
+
+# Dependency policy: this binary runs on 512 MB boards and talks to loopback.
+# No HTTP client crate. `ureq` and `reqwest` both pull `url` -> `idna` -> the
+# `icu_*` stack, which is a Unicode normalisation library we would carry solely
+# to parse "http://localhost:3000". src/http.rs is a ~60 line GET instead.
+#
+# mipidsi 0.10 is required, not 0.9: the `interface::SpiInterface` type and the
+# `Builder::new(model, di)` form only exist from 0.10. 0.9 has SPIInterfaceNoCS
+# and a different builder.
+[dependencies]
+mipidsi = "0.10"
+embedded-graphics = "0.8"
+embedded-hal = "1"
+linux-embedded-hal = { version = "0.5", features = ["gpio_cdev"] }
+gpio-cdev = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
