@@ -1,0 +1,115 @@
+# Publish the CST328 touch module and overlay on a kernel-* tag.
+#
+# Tagged by kernel version, not by repository version, because that is the
+# artefact's actual clock. A new Volumio kernel needs a new module with no
+# source change here; a source change here needs no new module for kernels
+# already published.
+#
+#   git tag kernel-6.12.75 && git push origin kernel-6.12.75
+#
+# ## Why a pinned container
+#
+# The module is only loadable if it is built with the same toolchain the
+# Raspberry Pi buildbot used. bcm2709_defconfig sets CONFIG_MODVERSIONS=y, so
+# symbol CRCs are checked at load time, and Kconfig evaluates its CC_HAS_*
+# symbols against the actual compiler at configure time. A different GCC
+# silently produces a different .config, different struct layouts, and
+# different CRCs.
+#
+# rpi-firmware/uname_string records the buildbot toolchain per commit. For
+# every 6.6 and 6.12 kernel checked it is GCC 11.4.0 from Ubuntu 22.04 with
+# binutils 2.38, so the job runs in a ubuntu:22.04 container rather than on
+# the runner default, which is a newer GCC and would publish modules that
+# load nowhere.
+#
+# download_build.sh verifies this itself and hard-fails on mismatch, so the
+# container pin and the gate are belt and braces. If uname_string ever names
+# a different compiler, the build stops rather than shipping something broken.
+
+name: release-kernel
+
+on:
+  push:
+    tags:
+      - 'kernel-*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+
+    steps:
+      - name: Install base tooling
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl wget git xz-utils sudo
+
+      - uses: actions/checkout@v4
+
+      - name: Derive kernel version from tag
+        id: kver
+        run: |
+          kver="${GITHUB_REF_NAME#kernel-}"
+          if [[ ! "$kver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag must be kernel-<x.y.z>, got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          echo "kver=${kver}" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Install pinned toolchain
+        working-directory: kernel/build-script
+        run: |
+          chmod +x install_deps_gcc_11.sh
+          ./install_deps_gcc_11.sh
+        shell: bash
+
+      - name: Build
+        working-directory: kernel/build-script
+        run: |
+          # Pin the script to the tagged version rather than whatever its
+          # default happens to be, and use the whole runner.
+          sed -i "s/^KERNEL_VERSION=.*/KERNEL_VERSION=\"${{ steps.kver.outputs.kver }}\"/" download_build.sh
+          sed -i "s/^CPU=.*/CPU=$(nproc)/" download_build.sh
+          chmod +x download_build.sh
+          # This verifies the toolchain against rpi-firmware/uname_string
+          # before doing any work and exits non-zero on mismatch.
+          ./download_build.sh
+        shell: bash
+
+      - name: Checksum
+        working-directory: kernel/output
+        run: |
+          f="cst328-rpi-${{ steps.kver.outputs.kver }}.tar.gz"
+          sha256sum "$f" > "$f.sha256"
+          ls -l
+        shell: bash
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            kernel/output/cst328-rpi-${{ steps.kver.outputs.kver }}.tar.gz
+            kernel/output/cst328-rpi-${{ steps.kver.outputs.kver }}.tar.gz.sha256
+          fail_on_unmatched_files: true
+          body: |
+            CST328 touch module and device tree overlay for Raspberry Pi
+            kernel ${{ steps.kver.outputs.kver }}.
+
+            `hynitron_cstxxx.ko` for all four Pi kernel variants, plus
+            `cst328.dtbo`. Built with the same toolchain the Raspberry Pi
+            buildbot used for this kernel, verified against
+            `rpi-firmware/uname_string` at build time. The module must match
+            the running kernel exactly.
+
+            Install:
+
+                curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | sudo bash -s kernel
+
+            Only needed for a kernel input device. The userspace renderer
+            reads the CST328 over i2cdev and needs none of this.

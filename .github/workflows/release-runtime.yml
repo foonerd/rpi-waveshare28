@@ -1,0 +1,84 @@
+# Publish the userspace renderer on a runtime-v* tag.
+#
+# Building in CI rather than on a workstation is the point: the published
+# binary is then reproducible from the tag, not whatever happened to be on
+# someone's machine that day.
+#
+#   git tag runtime-v0.1.0 && git push origin runtime-v0.1.0
+#
+# Only the musl targets are published. They are statically linked and run on
+# Buster, Bookworm and Trixie alike, which matters because Volumio 3 is Buster
+# and Volumio 4 is Bookworm. The glibc targets build from cross's stock images
+# (glibc 2.31) and would not run on Buster.
+
+name: release-runtime
+
+on:
+  push:
+    tags:
+      - 'runtime-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+          - armv7-unknown-linux-musleabihf
+          - aarch64-unknown-linux-musl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build
+        working-directory: runtime
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Checksum
+        working-directory: runtime
+        run: |
+          src="target/${{ matrix.target }}/release/waveshare28-panel"
+          out="waveshare28-panel-${{ matrix.target }}"
+          cp "$src" "$out"
+          sha256sum "$out" > "$out.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            runtime/waveshare28-panel-${{ matrix.target }}
+            runtime/waveshare28-panel-${{ matrix.target }}.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          fail_on_unmatched_files: true
+          body: |
+            Userspace renderer for the Waveshare 2.8 inch SPI LCD.
+
+            Statically linked musl binaries. These run on Buster, Bookworm and
+            Trixie, so they cover Volumio 3 and Volumio 4 alike.
+
+            Install:
+
+                curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | sudo bash -s runtime
+
+            Requires `dtparam=spi=on` in `/boot/userconfig.txt`, which the
+            installer adds. Mutually exclusive with a display overlay on
+            spi0 cs0: loading one disables the spidev node this needs.
