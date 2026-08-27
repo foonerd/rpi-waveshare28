@@ -30,6 +30,20 @@ USERCONFIG="/boot/userconfig.txt"
 
 MODE="${1:-runtime}"
 
+# Working directory for downloads, created in main and removed on exit.
+#
+# One directory for the whole run rather than a RETURN trap per function.
+# A RETURN trap in a function that uses a `local` fires after that local has
+# gone out of scope, so it either references an unset variable or has to bake
+# the path in at declaration time, which shellcheck then flags. Neither is
+# worth the argument for something a single EXIT trap handles correctly.
+TMPDIR_RUN=""
+
+cleanup() {
+    [[ -n "$TMPDIR_RUN" ]] && rm -rf "$TMPDIR_RUN"
+}
+trap cleanup EXIT
+
 log()  { printf '[install] %s\n' "$*"; }
 warn() { printf '[install] WARNING: %s\n' "$*" >&2; }
 die()  { printf '[install] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -129,18 +143,15 @@ ensure_config_line() {
 }
 
 install_kernel() {
-    local kver tag url tmp
+    local kver tag url
     kver="$(kernel_version)"
     tag="kernel-${kver}"
     url="${RELEASE_BASE}/${tag}/cst328-rpi-${kver}.tar.gz"
 
     log "running kernel $(kernel_release), looking for release ${tag}"
 
-    tmp="$(mktemp -d)"
-    # Double quotes so the path is baked into the trap at declaration. With
-    # single quotes the expansion happens when the trap fires, by which point
-    # the local is out of scope and set -u turns it into an error.
-    trap "rm -rf '${tmp}'" RETURN
+    local tmp="${TMPDIR_RUN}/kernel"
+    mkdir -p "$tmp"
 
     if ! curl -fsIL --connect-timeout 15 -o /dev/null "$url" 2>/dev/null; then
         die "no published module for kernel ${kver}.
@@ -175,12 +186,12 @@ install_kernel() {
 }
 
 install_runtime() {
-    local arch url tmp
+    local arch url
     arch="$(runtime_arch)"
     url="${RELEASE_BASE}/${RUNTIME_TAG}/waveshare28-panel-${arch}"
 
-    tmp="$(mktemp -d)"
-    trap "rm -rf '${tmp}'" RETURN
+    local tmp="${TMPDIR_RUN}/runtime"
+    mkdir -p "$tmp"
 
     fetch "$url" "${tmp}/waveshare28-panel"
     fetch "${url}.sha256" "${tmp}/waveshare28-panel.sha256"
@@ -237,6 +248,8 @@ main() {
     require curl
     require tar
     require sha256sum
+
+    TMPDIR_RUN="$(mktemp -d)"
 
     case "$MODE" in
         kernel)
