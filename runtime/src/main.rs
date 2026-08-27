@@ -39,7 +39,12 @@ const TICK: Duration = Duration::from_millis(40);
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            // rustls logs every handshake at debug, which drowns this crate's
+            // own output and fills the journal once this runs as a service.
+            // Narrowing it here rather than in the unit file means
+            // RUST_LOG=debug stays useful without anyone having to remember.
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,rustls=warn".into()),
         )
         .init();
 
