@@ -15,6 +15,7 @@ use mipidsi::{Builder, Display};
 
 use crate::art::Art;
 use crate::config::Config;
+use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::ui::{self, Layout, TextPane};
 
@@ -125,6 +126,12 @@ impl Panel {
     /// Repaint the album art only.
     pub fn render_art(&mut self, art: Option<&Art>) -> Result<()> {
         ui::draw_art(&mut self.display, &self.layout, art).map_err(|e| anyhow!("drawing: {e:?}"))
+    }
+
+    /// Draw the status screen shown before the player is available.
+    pub fn render_status(&mut self, host: &HostInfo) -> Result<()> {
+        ui::draw_status(&mut self.display, &self.layout, host)
+            .map_err(|e| anyhow!("drawing: {e:?}"))
     }
 
     /// The size of the art box, so the loader knows what to scale to.

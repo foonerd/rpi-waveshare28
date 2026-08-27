@@ -14,6 +14,7 @@ mod config;
 mod display;
 mod http;
 mod input;
+mod net;
 mod state;
 mod touch;
 mod ui;
@@ -26,6 +27,7 @@ use std::time::{Duration, Instant};
 use art::{Art, ArtLoader};
 use config::Config;
 use display::Panel;
+use net::{HostInfo, NetMonitor};
 use state::{Command, CommandSink, PlayerState, StateSource};
 use ui::{Action, TextPane};
 
@@ -89,16 +91,56 @@ fn run(cfg: Config) -> Result<()> {
     let mut current = PlayerState::default();
     let mut next_poll = Instant::now();
 
+    // Until the player answers for the first time, the panel shows host
+    // addresses. The renderer starts early and deliberately does not wait for
+    // volumio.service, so this covers most of the boot, and the address is
+    // the one thing someone needs before the player is reachable.
+    let mut ready = false;
+    let mut netmon = NetMonitor::default();
+    let mut host = HostInfo::default();
+
     loop {
+        if !ready {
+            // Driven by wireless.js touching /tmp/networkstatus, not by a
+            // timer over getifaddrs. See src/net.rs.
+            if let Some(now) = netmon.poll() {
+                if now != host {
+                    host = now;
+                    panel.render_status(&host)?;
+                }
+            }
+        }
+
         if Instant::now() >= next_poll {
             match source.poll() {
-                Ok(s) => current = s,
-                // A failed poll keeps the last good state on screen. Blanking
-                // on a transient failure during a Volumio restart would be
-                // worse than showing something slightly stale.
+                Ok(s) => {
+                    // First success: leave the status screen. `shown` is
+                    // cleared so the next pass draws the player in full,
+                    // since none of it is on screen yet.
+                    if !ready {
+                        tracing::info!("player available, switching from status screen");
+                        ready = true;
+                        shown = None;
+                    }
+                    current = s;
+                }
+                // A failed poll keeps whatever is on screen. Once the player
+                // has been seen once the status screen is never shown again:
+                // a failure during a Volumio restart is transient, and
+                // reverting to an address list mid-listening would be worse
+                // than a slightly stale player.
                 Err(e) => tracing::warn!(error = %e, "state poll failed"),
             }
             next_poll = Instant::now() + poll_interval;
+        }
+
+        if !ready {
+            // Drain touches so the channel cannot fill, and use the same
+            // blocking wait as the player path so the loop is not spinning.
+            if let Ok(action) = rx.recv_timeout(TICK) {
+                tracing::debug!(?action, "touch before player ready, ignored");
+            }
+            continue;
         }
 
         pane.set(

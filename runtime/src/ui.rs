@@ -19,6 +19,7 @@ use embedded_graphics::{
 };
 
 use crate::art::Art;
+use crate::net::{HostInfo, NetState};
 use crate::state::PlayerState;
 use crate::touch::Touch;
 
@@ -40,6 +41,13 @@ const META_FONT: &MonoFont = &FONT_6X10;
 pub struct Layout {
     /// Rotation in degrees, needed to map touch coordinates back.
     pub rotation: u16,
+    /// The whole rotated frame.
+    ///
+    /// Explicit rather than derived from the other rectangles. The status
+    /// screen needs the full width: a full IPv6 address is 39 characters,
+    /// which is 234 pixels at the meta font and does not fit the player's
+    /// text column.
+    pub frame: Rectangle,
     /// Album art.
     pub art: Rectangle,
     /// Track text: title, artist, album, wrapped and centred.
@@ -70,6 +78,7 @@ impl Layout {
     fn portrait(rotation: u16) -> Self {
         Self {
             rotation,
+            frame: rect(0, 0, 240, 320),
             art: rect(20, 8, 200, 200),
             text: rect(4, 214, 232, 48),
             volume: rect(10, 268, 220, 6),
@@ -97,6 +106,7 @@ impl Layout {
     fn landscape(rotation: u16) -> Self {
         Self {
             rotation,
+            frame: rect(0, 0, 320, 240),
             art: rect(10, 4, 168, 168),
             text: rect(184, 4, 132, 168),
             volume: rect(10, 178, 300, 6),
@@ -426,6 +436,78 @@ where
             y += font.character_size.height as i32 + LINE_GAP;
         }
         y -= LINE_GAP;
+    }
+
+    target.fill_contiguous(&region, buf.px.iter().copied())
+}
+
+/// Draw the status screen shown before the player answers.
+///
+/// This is what is on the panel from a few seconds after power on until
+/// Volumio's node process responds, which is most of a minute. It exists
+/// because the alternative is a dark screen, and because the address is the
+/// one thing someone needs before the player is reachable.
+///
+/// Uses the whole frame rather than the player's text column: a full IPv6
+/// address is 39 characters, 234 pixels at the meta font, and the column is
+/// only 132 wide.
+///
+/// Composed in memory and blitted once, same as the text pane, for the same
+/// reason: drawing onto a clipped view of the panel forces per-pixel
+/// addressing and flickers.
+pub fn draw_status<D>(target: &mut D, layout: &Layout, host: &HostInfo) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let region = layout.frame;
+    let mut buf = RowBuf::new(region.size);
+
+    let centred = TextStyleBuilder::new()
+        .baseline(Baseline::Top)
+        .alignment(Alignment::Center)
+        .build();
+    let cx = region.size.width as i32 / 2;
+
+    let title = MonoTextStyle::new(TITLE_FONT, Rgb565::WHITE);
+    let meta = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
+    let dim = MonoTextStyle::new(META_FONT, Rgb565::CSS_DIM_GRAY);
+
+    // Build the lines first so the block height is known and it can be
+    // centred, rather than guessing a starting offset per state.
+    let mut lines: Vec<(String, MonoTextStyle<Rgb565>)> = Vec::new();
+
+    match &host.state {
+        NetState::Waiting => {
+            lines.push(("waiting for network".into(), dim));
+        }
+        NetState::Hotspot { ssid, addr } => {
+            // Here the address is not somewhere to connect to over an existing
+            // network, it is the second half of an instruction: join this
+            // network, then open this address.
+            lines.push(("Wi-Fi setup".into(), dim));
+            lines.push((ssid.clone(), meta));
+            lines.push((addr.clone(), meta));
+        }
+        NetState::Connected(addrs) => {
+            for a in addrs {
+                lines.push((format!("{}  {}", a.iface, a.addr), meta));
+            }
+        }
+    }
+
+    let title_h = TITLE_FONT.character_size.height as i32;
+    let meta_h = META_FONT.character_size.height as i32;
+    let block = title_h + FIELD_GAP + lines.len() as i32 * (meta_h + LINE_GAP) - LINE_GAP;
+
+    let mut y = ((region.size.height as i32 - block) / 2).max(0);
+
+    // Infallible: RowBuf discards out-of-bounds pixels.
+    let _ = Text::with_text_style(&host.hostname, Point::new(cx, y), title, centred).draw(&mut buf);
+    y += title_h + FIELD_GAP;
+
+    for (text, style) in &lines {
+        let _ = Text::with_text_style(text, Point::new(cx, y), *style, centred).draw(&mut buf);
+        y += meta_h + LINE_GAP;
     }
 
     target.fill_contiguous(&region, buf.px.iter().copied())

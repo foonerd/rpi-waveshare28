@@ -21,6 +21,10 @@ embedded-graphics = "0.8"
 embedded-hal = "1"
 linux-embedded-hal = { version = "0.5", features = ["gpio_cdev"] }
 gpio-cdev = "0.6"
+# Interface addresses for the pre-player status screen. Volumio publishes
+# network *state* in /tmp/networkstatus and /data/wlan0status, but not the
+# assigned addresses, so those still come from the kernel.
+if-addrs = "0.13"
 # Album art. Volumio's /albumart serves PNG for local files and proxies
 # whatever a stream provides, so both codecs are needed. default-features off
 # keeps the other twenty formats and their dependencies out of the tree.
