@@ -138,15 +138,41 @@ apply_custom() {
     cp "../source_files/${SOURCES}/overlays/cst328-overlay.dts" \
        "${TREE}/${OVERLAY_DIR}/cst328-overlay.dts"
 
-    if ! grep -q "cst328.dtbo" "${TREE}/${OVERLAY_DIR}/Makefile"; then
-        sed -i 's/^\tcma\.dtbo \\$/\tcma.dtbo \\\n\tcst328.dtbo \\/' \
-            "${TREE}/${OVERLAY_DIR}/Makefile"
+    # Register the overlay in the build.
+    #
+    # Insert immediately after the list header rather than next to a
+    # neighbouring entry. Position within the list is cosmetic; make does not
+    # care about ordering, so anchoring on a specific sibling only creates a
+    # dependency on that sibling still existing upstream.
+    #
+    # The header is stable and structural:
+    #     dtbo-$(CONFIG_ARCH_BCM2835) += \
+    #             act-led.dtbo \
+    #             ...
+    #
+    # awk exits non-zero if the header is not found, so a change in upstream
+    # layout stops the build rather than producing a package with no overlay.
+    local makefile="${TREE}/${OVERLAY_DIR}/Makefile"
+
+    if grep -q "cst328.dtbo" "${makefile}"; then
+        echo "    cst328.dtbo already registered"
+    else
+        if ! awk -v ins='\tcst328.dtbo \\' '
+            !done && /^dtbo-.*\+=[ \t]*\\$/ { print; print ins; done = 1; next }
+            { print }
+            END { if (!done) exit 1 }
+        ' "${makefile}" > "${makefile}.new"; then
+            rm -f "${makefile}.new"
+            echo "!!!  Could not find the dtbo list header in ${OVERLAY_DIR}/Makefile  !!!"
+            echo "!!!  Upstream layout changed; fix apply_custom()  !!!"
+            exit 1
+        fi
+        mv "${makefile}.new" "${makefile}"
         echo "    added cst328.dtbo to overlays Makefile"
     fi
 
-    if ! grep -q "cst328.dtbo" "${TREE}/${OVERLAY_DIR}/Makefile"; then
-        echo "!!!  FAILED to add cst328.dtbo to the overlays Makefile  !!!"
-        echo "!!!  The anchor line changed upstream, fix apply_custom()  !!!"
+    if ! grep -q "cst328.dtbo" "${makefile}"; then
+        echo "!!!  cst328.dtbo missing from the overlays Makefile after edit  !!!"
         exit 1
     fi
 }
