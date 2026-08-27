@@ -27,7 +27,7 @@ use art::{Art, ArtLoader};
 use config::Config;
 use display::Panel;
 use state::{Command, CommandSink, PlayerState, StateSource};
-use ui::{Action, Ticker};
+use ui::{Action, TextPane};
 
 /// How long the main loop waits for a touch before going round again.
 ///
@@ -78,8 +78,7 @@ fn run(cfg: Config) -> Result<()> {
         .context("starting album art loader")?;
     let mut art: Option<Art> = None;
 
-    let mut title = Ticker::default();
-    let mut artist = Ticker::default();
+    let mut pane = TextPane::default();
 
     let mut shown: Option<PlayerState> = None;
     let mut current = PlayerState::default();
@@ -97,15 +96,11 @@ fn run(cfg: Config) -> Result<()> {
             next_poll = Instant::now() + poll_interval;
         }
 
-        title.set(
+        pane.set(
             current.title.as_deref().unwrap_or(""),
-            layout.title.size.width,
-            ui::title_font(),
-        );
-        artist.set(
             current.artist.as_deref().unwrap_or(""),
-            layout.artist.size.width,
-            ui::meta_font(),
+            current.album.as_deref().unwrap_or(""),
+            layout.text,
         );
 
         if let Some(path) = current.album_art.as_deref() {
@@ -135,15 +130,15 @@ fn run(cfg: Config) -> Result<()> {
                 shown = Some(current.clone());
             }
             _ => {
-                panel.render(&current, art.as_ref(), &title, &artist)?;
+                panel.render(&current, art.as_ref(), &pane)?;
                 shown = Some(current.clone());
             }
         }
 
-        // Advance the scrollers. Repaint only when something actually moved;
+        // Advance the scroller. Repaint only when something actually moved;
         // text that fits never moves and costs nothing.
-        if title.step() | artist.step() {
-            panel.render_rows(&title, &artist)?;
+        if pane.step() {
+            panel.render_rows(&pane)?;
         }
 
         // Block until a touch arrives or the tick expires. Waiting here rather

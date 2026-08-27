@@ -30,16 +30,6 @@ pub const NATIVE_H: u16 = 320;
 const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
 const META_FONT: &MonoFont = &FONT_6X10;
 
-/// Font used for the title row, exposed so the ticker can measure text.
-pub fn title_font() -> &'static MonoFont<'static> {
-    TITLE_FONT
-}
-
-/// Font used for the artist row, exposed so the ticker can measure text.
-pub fn meta_font() -> &'static MonoFont<'static> {
-    META_FONT
-}
-
 /// Where everything sits, for one orientation.
 ///
 /// No overall width or height: every element is an explicit rectangle, the
@@ -52,10 +42,8 @@ pub struct Layout {
     pub rotation: u16,
     /// Album art.
     pub art: Rectangle,
-    /// Track title, scrolling if too long.
-    pub title: Rectangle,
-    /// Artist, scrolling if too long.
-    pub artist: Rectangle,
+    /// Track text: title, artist, album, wrapped and centred.
+    pub text: Rectangle,
     /// Volume slider.
     pub volume: Rectangle,
     /// Playback progress bar.
@@ -83,28 +71,37 @@ impl Layout {
         Self {
             rotation,
             art: rect(20, 8, 200, 200),
-            title: rect(0, 214, 240, 16),
-            artist: rect(0, 234, 240, 11),
-            volume: rect(10, 252, 220, 6),
-            progress: rect(0, 266, 240, 4),
-            transport: rect(0, 278, 240, 42),
+            text: rect(4, 214, 232, 48),
+            volume: rect(10, 268, 220, 6),
+            progress: rect(10, 280, 220, 4),
+            transport: rect(0, 292, 240, 28),
         }
     }
 
-    /// 320 wide by 240 tall. Art on the left, a control column on the right.
+    /// 320 wide by 240 tall. Art on the left, text column on the right,
+    /// transport across the full width at the bottom.
     ///
-    /// The column is 104 px wide, which is enough for 11 characters of the
-    /// title font. Almost every title scrolls at this width, which is why the
-    /// ticker is not optional.
+    /// The transport is not in the column, which is the difference that
+    /// matters. At roughly 143 ppi a fingertip contact patch is 40 to 50
+    /// pixels, so three buttons in a 104 px column are 34 px wide: below the
+    /// point where they can be hit reliably, while occupying vertical space
+    /// they do not need. Full width makes them 106 by 40.
+    ///
+    /// The volume slider gains the same way. At 104 px one percent is one
+    /// pixel and the control is only good for coarse jumps; at 300 px it is
+    /// three pixels per percent and can actually be set.
+    ///
+    /// The cost is album art at 168 rather than 200. It is still by far the
+    /// largest element, and a slider that cannot be landed on is a worse
+    /// daily annoyance than 32 pixels of cover.
     fn landscape(rotation: u16) -> Self {
         Self {
             rotation,
-            art: rect(12, 20, 200, 200),
-            title: rect(216, 26, 104, 16),
-            artist: rect(216, 46, 104, 11),
-            volume: rect(216, 72, 104, 6),
-            progress: rect(216, 86, 104, 4),
-            transport: rect(216, 110, 104, 110),
+            art: rect(10, 4, 168, 168),
+            text: rect(184, 4, 132, 168),
+            volume: rect(10, 178, 300, 6),
+            progress: rect(10, 190, 300, 4),
+            transport: rect(0, 200, 320, 40),
         }
     }
 
@@ -179,17 +176,26 @@ pub fn hit(layout: &Layout, t: Touch) -> Option<Action> {
     None
 }
 
-/// A back-and-forth scroller for text wider than its box.
+/// Track text, word-wrapped into the column and centred.
 ///
-/// Ping-pong rather than wrap-around: a wrapping marquee reads as a stream of
-/// characters with no beginning, whereas bouncing keeps the start of the title
-/// identifiable, which is what someone glancing at a player actually wants.
+/// Wrapping rather than a horizontal marquee. Three lines of fourteen
+/// characters covers most titles, and static text you can read at a glance is
+/// better than text that moves. Scrolling remains only as the fallback for
+/// content that still does not fit, and it scrolls the block vertically,
+/// which is the direction the overflow is in.
 #[derive(Debug, Default)]
-pub struct Ticker {
-    text: String,
-    /// Pixels scrolled from the left.
+pub struct TextPane {
+    title: Vec<String>,
+    artist: Vec<String>,
+    album: Vec<String>,
+    /// Source strings, kept to detect a genuine change. Re-wrapping on every
+    /// poll would restart the scroll twice a second.
+    src: (String, String, String),
+    /// Total height of the composed block in pixels.
+    height: i32,
+    /// Pixels scrolled from the top.
     offset: i32,
-    /// Pixels of overflow, zero when the text fits.
+    /// Pixels of overflow, zero when the block fits.
     over: i32,
     /// Direction of travel.
     forward: bool,
@@ -201,23 +207,101 @@ pub struct Ticker {
 const HOLD_TICKS: u8 = 20;
 /// Pixels moved per tick.
 const STEP: i32 = 1;
+/// Vertical gap between lines of the same field.
+const LINE_GAP: i32 = 2;
+/// Vertical gap between fields.
+const FIELD_GAP: i32 = 8;
 
-impl Ticker {
-    /// Point at new text. Resets position only if the text actually changed,
-    /// so a redraw does not restart a scroll mid-title.
-    pub fn set(&mut self, text: &str, box_w: u32, font: &MonoFont) {
-        if self.text == text {
+/// Greedy word wrap to a pixel width, for a monospaced font.
+///
+/// A word longer than the line is hard-split rather than left to overflow:
+/// long unbroken strings are common in filenames and stream titles, and
+/// silently clipping them loses the part most likely to identify the track.
+fn wrap(text: &str, width_px: u32, font: &MonoFont) -> Vec<String> {
+    let cols = (width_px / font.character_size.width).max(1) as usize;
+    let mut out = Vec::new();
+    let mut line = String::new();
+
+    for word in text.split_whitespace() {
+        let mut word = word;
+
+        while word.chars().count() > cols {
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            let split = word
+                .char_indices()
+                .nth(cols)
+                .map(|(i, _)| i)
+                .unwrap_or(word.len());
+            out.push(word[..split].to_string());
+            word = &word[split..];
+        }
+
+        if line.is_empty() {
+            line.push_str(word);
+        } else if line.chars().count() + 1 + word.chars().count() <= cols {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut line));
+            line.push_str(word);
+        }
+    }
+
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+/// Height of a wrapped field in pixels, zero when it has no lines.
+fn block_height(lines: &[String], font: &MonoFont) -> i32 {
+    if lines.is_empty() {
+        return 0;
+    }
+    let line_h = font.character_size.height as i32;
+    lines.len() as i32 * line_h + (lines.len() as i32 - 1) * LINE_GAP
+}
+
+impl TextPane {
+    /// Re-wrap for new content. Does nothing if the strings are unchanged, so
+    /// a scroll in progress is not restarted by an ordinary poll.
+    pub fn set(&mut self, title: &str, artist: &str, album: &str, region: Rectangle) {
+        let next = (title.to_string(), artist.to_string(), album.to_string());
+        if self.src == next {
             return;
         }
-        let px = font.character_size.width as i32 * text.chars().count() as i32;
-        self.text = text.to_string();
-        self.over = (px - box_w as i32).max(0);
+        self.src = next;
+
+        let w = region.size.width;
+        self.title = wrap(title, w, TITLE_FONT);
+        self.artist = wrap(artist, w, META_FONT);
+        self.album = wrap(album, w, META_FONT);
+
+        let mut h = 0;
+        for (lines, font) in [
+            (&self.title, TITLE_FONT),
+            (&self.artist, META_FONT),
+            (&self.album, META_FONT),
+        ] {
+            let bh = block_height(lines, font);
+            if bh > 0 {
+                if h > 0 {
+                    h += FIELD_GAP;
+                }
+                h += bh;
+            }
+        }
+
+        self.height = h;
+        self.over = (h - region.size.height as i32).max(0);
         self.offset = 0;
         self.forward = true;
         self.hold = HOLD_TICKS;
     }
 
-    /// Advance one tick. Returns true if the position changed and the row
+    /// Advance one tick. Returns true if the position changed and the pane
     /// needs repainting.
     pub fn step(&mut self) -> bool {
         if self.over == 0 {
@@ -246,14 +330,14 @@ impl Ticker {
     }
 }
 
-/// An in-memory RGB565 buffer, used to compose a row before sending it.
+/// An in-memory RGB565 buffer, used to compose a region before sending it.
 ///
 /// Drawing text straight onto a `clipped()` view of the panel is what caused
-/// the ticker to flicker. A clipped target must bounds-check every pixel, so
+/// the text to flicker. A clipped target must bounds-check every pixel, so
 /// `fill_contiguous` degrades to `draw_iter`, and mipidsi's `draw_iter` sets an
-/// address window per pixel. A 104x11 row is over a thousand SPI transactions,
-/// repeated every tick. Composing here and blitting once is a single window
-/// write, and it is atomic on the glass rather than painting progressively.
+/// address window per pixel. A 132x168 region is over twenty thousand SPI
+/// transactions. Composing here and blitting once is a single window write,
+/// and it is atomic on the glass rather than painting progressively.
 struct RowBuf {
     size: Size,
     px: Vec<Rgb565>,
@@ -292,46 +376,59 @@ impl DrawTarget for RowBuf {
     }
 }
 
-/// Draw one text row, clipped to its box, scrolled by the ticker.
+/// Draw the text pane: title, artist and album, wrapped, centred both ways.
 ///
-/// Text that fits is centred; text that overflows is left aligned and
-/// scrolled, because centring a scrolling string makes the motion look like a
-/// glitch rather than a deliberate scroll.
+/// Vertically centred when the block fits, top-aligned and scrolled when it
+/// does not, because centring something that is moving reads as a fault
+/// rather than as a deliberate scroll.
 ///
 /// Composed in memory and blitted in one write. See [`RowBuf`] for why.
-fn draw_row<D>(
-    target: &mut D,
-    boxr: Rectangle,
-    ticker: &Ticker,
-    font: &MonoFont,
-    colour: Rgb565,
-) -> Result<(), D::Error>
+fn draw_text<D>(target: &mut D, region: Rectangle, pane: &TextPane) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let mut buf = RowBuf::new(boxr.size);
-    let style = MonoTextStyle::new(font, colour);
+    let mut buf = RowBuf::new(region.size);
 
-    // Coordinates are buffer-relative, so the box origin drops out.
-    let (origin, text_style) = if ticker.over == 0 {
-        (
-            Point::new(boxr.size.width as i32 / 2, 0),
-            TextStyleBuilder::new()
-                .baseline(Baseline::Top)
-                .alignment(Alignment::Center)
-                .build(),
-        )
+    let centred = TextStyleBuilder::new()
+        .baseline(Baseline::Top)
+        .alignment(Alignment::Center)
+        .build();
+    let cx = region.size.width as i32 / 2;
+
+    // Centre the block when it fits; otherwise start at the top and let the
+    // scroll offset move it.
+    let mut y = if pane.over == 0 {
+        (region.size.height as i32 - pane.height) / 2
     } else {
-        (
-            Point::new(-ticker.offset, 0),
-            TextStyleBuilder::new().baseline(Baseline::Top).build(),
-        )
+        -pane.offset
     };
 
-    // Infallible: RowBuf discards out-of-bounds pixels rather than erroring.
-    let _ = Text::with_text_style(&ticker.text, origin, style, text_style).draw(&mut buf);
+    let fields: [(&Vec<String>, &MonoFont, Rgb565); 3] = [
+        (&pane.title, TITLE_FONT, Rgb565::WHITE),
+        (&pane.artist, META_FONT, Rgb565::CSS_LIGHT_GRAY),
+        (&pane.album, META_FONT, Rgb565::CSS_DIM_GRAY),
+    ];
 
-    target.fill_contiguous(&boxr, buf.px.iter().copied())
+    let mut first = true;
+    for (lines, font, colour) in fields {
+        if lines.is_empty() {
+            continue;
+        }
+        if !first {
+            y += FIELD_GAP;
+        }
+        first = false;
+
+        let style = MonoTextStyle::new(font, colour);
+        for line in lines {
+            // Infallible: RowBuf discards out-of-bounds pixels.
+            let _ = Text::with_text_style(line, Point::new(cx, y), style, centred).draw(&mut buf);
+            y += font.character_size.height as i32 + LINE_GAP;
+        }
+        y -= LINE_GAP;
+    }
+
+    target.fill_contiguous(&region, buf.px.iter().copied())
 }
 
 /// Draw the whole screen.
@@ -345,8 +442,7 @@ pub fn draw<D>(
     layout: &Layout,
     state: &PlayerState,
     art: Option<&Art>,
-    title: &Ticker,
-    artist: &Ticker,
+    pane: &TextPane,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -354,15 +450,7 @@ where
     target.clear(Rgb565::BLACK)?;
 
     draw_art(target, layout, art)?;
-
-    draw_row(target, layout.title, title, TITLE_FONT, Rgb565::WHITE)?;
-    draw_row(
-        target,
-        layout.artist,
-        artist,
-        META_FONT,
-        Rgb565::CSS_LIGHT_GRAY,
-    )?;
+    draw_text(target, layout.text, pane)?;
 
     draw_volume(target, layout, state)?;
     draw_progress(target, layout, state)?;
@@ -402,24 +490,12 @@ where
     target.fill_contiguous(&placed, art.px.iter().copied())
 }
 
-/// Repaint the scrolling rows only.
-pub fn draw_rows<D>(
-    target: &mut D,
-    layout: &Layout,
-    title: &Ticker,
-    artist: &Ticker,
-) -> Result<(), D::Error>
+/// Repaint the text pane only.
+pub fn draw_rows<D>(target: &mut D, layout: &Layout, pane: &TextPane) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    draw_row(target, layout.title, title, TITLE_FONT, Rgb565::WHITE)?;
-    draw_row(
-        target,
-        layout.artist,
-        artist,
-        META_FONT,
-        Rgb565::CSS_LIGHT_GRAY,
-    )
+    draw_text(target, layout.text, pane)
 }
 
 /// Repaint the progress bar only.

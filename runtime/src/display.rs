@@ -16,7 +16,7 @@ use mipidsi::{Builder, Display};
 use crate::art::Art;
 use crate::config::Config;
 use crate::state::PlayerState;
-use crate::ui::{self, Layout, Ticker};
+use crate::ui::{self, Layout, TextPane};
 
 /// Consumer label reported in `gpioinfo`, so a stuck line is traceable to
 /// this process rather than showing as anonymous.
@@ -116,10 +116,9 @@ impl Panel {
         &mut self,
         state: &PlayerState,
         art: Option<&Art>,
-        title: &Ticker,
-        artist: &Ticker,
+        pane: &TextPane,
     ) -> Result<()> {
-        ui::draw(&mut self.display, &self.layout, state, art, title, artist)
+        ui::draw(&mut self.display, &self.layout, state, art, pane)
             .map_err(|e| anyhow!("drawing: {e:?}"))
     }
 
@@ -133,10 +132,9 @@ impl Panel {
         self.layout.art.size.width.min(self.layout.art.size.height)
     }
 
-    /// Repaint the scrolling rows only.
-    pub fn render_rows(&mut self, title: &Ticker, artist: &Ticker) -> Result<()> {
-        ui::draw_rows(&mut self.display, &self.layout, title, artist)
-            .map_err(|e| anyhow!("drawing: {e:?}"))
+    /// Repaint the text pane only.
+    pub fn render_rows(&mut self, pane: &TextPane) -> Result<()> {
+        ui::draw_rows(&mut self.display, &self.layout, pane).map_err(|e| anyhow!("drawing: {e:?}"))
     }
 
     /// Repaint the progress bar only.
