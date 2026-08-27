@@ -1,0 +1,11 @@
+# kernel build dirs
+linux-*/
+*.dtbo
+*.ko
+*.ko.xz
+*.tar.gz
+0*
+
+# rust
+/target/
+**/*.rs.bk
