@@ -22,10 +22,10 @@ set -euo pipefail
 
 REPO="foonerd/rpi-waveshare28"
 RELEASE_BASE="https://github.com/${REPO}/releases/download"
+RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 RUNTIME_TAG="runtime-v0.1.0"
 
 BIN_DIR="/usr/local/bin"
-UNIT_DIR="/etc/systemd/system"
 USERCONFIG="/boot/userconfig.txt"
 
 MODE="${1:-runtime}"
@@ -200,46 +200,29 @@ install_runtime() {
     log "installing to ${BIN_DIR}"
     install -m 0755 "${tmp}/waveshare28-panel" "${BIN_DIR}/waveshare28-panel"
 
-    log "installing systemd unit"
-    cat > "${UNIT_DIR}/waveshare28-panel.service" <<'EOF'
-[Unit]
-Description=Waveshare 2.8 inch SPI panel renderer
-# Volumio's API must be up before the first state poll, but a failure to
-# reach it is survivable, so this is ordering rather than a hard dependency.
-After=volumio.service network.target
-Wants=volumio.service
+    log "installing configurator"
+    fetch "${RAW_BASE}/scripts/waveshare28-config" "${tmp}/waveshare28-config"
+    install -m 0755 "${tmp}/waveshare28-config" "${BIN_DIR}/waveshare28-config"
 
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/waveshare28-panel
-Restart=on-failure
-RestartSec=5
-# The process opens /dev/spidev0.0, /dev/i2c-1 and /dev/gpiochip0. Volumio
-# already puts the volumio user in the spi, i2c and gpio groups.
-User=volumio
-Group=volumio
-SupplementaryGroups=spi i2c gpio
+    # Boot configuration, the systemd unit and its safe enablement are all
+    # derived from /boot/waveshare28.conf, so the configurator owns them
+    # rather than this script writing a second copy that can drift.
+    log "applying configuration"
+    "${BIN_DIR}/waveshare28-config" apply
 
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    ensure_config_line "dtparam=spi=on"
-
-    systemctl daemon-reload
-    systemctl enable waveshare28-panel.service
-
-    log "runtime installed and enabled."
-    log "SPI was just enabled in userconfig.txt, so a reboot is required."
-    log "After reboot:  systemctl status waveshare28-panel"
+    log "runtime installed."
+    log "Rotation:  waveshare28-config set rotation=90"
+    log "Status:    systemctl status waveshare28-panel"
+    log "Recovery:  waveshare28-config recover"
 }
 
 check_conflict() {
     if grep -qE '^dtoverlay=(fbtft|mipi-dbi-spi)' "$USERCONFIG" 2>/dev/null; then
         warn "a display overlay is configured on spi0 cs0 in ${USERCONFIG}."
-        warn "That disables the spidev node, so /dev/spidev0.0 will not exist"
-        warn "and the renderer cannot start. Remove it, or use the kernel path"
-        warn "instead of the runtime."
+        warn "An overlay applied by the firmware is merged into the device tree"
+        warn "before the kernel starts and cannot be removed at runtime, so the"
+        warn "renderer could never open /dev/spidev0.0. The configurator will"
+        warn "remove those lines."
     fi
 }
 
