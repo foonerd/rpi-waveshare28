@@ -9,11 +9,12 @@
 # overlay on spi0 cs0 removes /dev/spidev0.0, which the runtime needs. Building
 # both is fine; running both is not.
 
-.PHONY: help kernel runtime validate dist clean
+.PHONY: help kernel runtime validate fmt-fix dist clean
 
 help:
 	@echo "targets:"
 	@echo "  validate   fmt, clippy and tests for the runtime, no build"
+	@echo "  fmt-fix    apply rustfmt to the runtime"
 	@echo "  runtime    validate then cross-build the userspace renderer"
 	@echo "  dist       runtime plus packaged binaries and checksums"
 	@echo "  kernel     build the CST328 module and overlay (see kernel/README.md)"
@@ -26,6 +27,9 @@ help:
 # Fast feedback without waiting on three cross builds.
 validate:
 	$(MAKE) -C runtime validate
+
+fmt-fix:
+	$(MAKE) -C runtime fmt-fix
 
 runtime:
 	$(MAKE) -C runtime
