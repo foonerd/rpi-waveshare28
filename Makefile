@@ -9,23 +9,32 @@
 # overlay on spi0 cs0 removes /dev/spidev0.0, which the runtime needs. Building
 # both is fine; running both is not.
 
-.PHONY: help kernel runtime clean
+.PHONY: help kernel runtime validate dist clean
 
 help:
 	@echo "targets:"
+	@echo "  validate   fmt, clippy and tests for the runtime, no build"
+	@echo "  runtime    validate then cross-build the userspace renderer"
+	@echo "  dist       runtime plus packaged binaries and checksums"
 	@echo "  kernel     build the CST328 module and overlay (see kernel/README.md)"
-	@echo "  runtime    build the userspace renderer (see runtime/README.md)"
 	@echo "  clean      clean both"
 	@echo ""
 	@echo "each subtree can also be built directly:"
 	@echo "  cd kernel/build-script && ./download_build.sh"
 	@echo "  cd runtime && make"
 
-kernel:
-	cd kernel/build-script && ./download_build.sh
+# Fast feedback without waiting on three cross builds.
+validate:
+	$(MAKE) -C runtime validate
 
 runtime:
 	$(MAKE) -C runtime
+
+dist:
+	$(MAKE) -C runtime dist
+
+kernel:
+	cd kernel/build-script && ./download_build.sh
 
 clean:
 	$(MAKE) -C runtime clean
