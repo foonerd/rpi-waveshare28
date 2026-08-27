@@ -158,17 +158,19 @@ Documentation=https://github.com/foonerd/rpi-waveshare28
 # the player answers, so waiting would leave the panel dark for the whole boot
 # to no purpose.
 After=local-fs.target
+# Rate limiting lives in [Unit], not [Service]: it moved there in systemd 229
+# and only the older StartLimitInterval was ever a [Service] key.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=${BIN_DIR}/waveshare28-panel
-# Bounded failure: a crash loop stops rather than restarting forever, and a
-# hung start cannot hold the unit open indefinitely.
+# Bounded failure: a hung start cannot hold the unit open indefinitely, and
+# the burst limit above stops a crash loop rather than restarting forever.
 TimeoutStartSec=30
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=120
-StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=waveshare28-panel
