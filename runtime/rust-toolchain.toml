@@ -1,5 +1,10 @@
+# Not an MSRV declaration, a build pin. This repository is standalone and has
+# no downstream consumers to keep compatible, so the floor is set by whatever
+# the dependencies need. It started at 1.85 copied from a sister repository,
+# which was cargo cult: pinning backwards to defend an invented number means
+# fighting the ecosystem for nothing.
 [toolchain]
-channel = "1.85"
+channel = "1.88"
 targets = [
     "arm-unknown-linux-musleabihf",
     "armv7-unknown-linux-musleabihf",
