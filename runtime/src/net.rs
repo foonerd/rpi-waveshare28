@@ -161,6 +161,17 @@ fn hostname() -> String {
 }
 
 fn state() -> NetState {
+    let addrs = addresses();
+
+    // Real addresses win over hotspot mode. The two coexist routinely: the
+    // wireless daemon falls back to an access point when it cannot join a
+    // network, while ethernet stays up with a perfectly good address.
+    // Volumio's own network_monitor.sh treats the hotspot address as "not
+    // connected" but still reports ethernet, and this follows that.
+    if !addrs.is_empty() {
+        return NetState::Connected(addrs);
+    }
+
     if in_hotspot_mode() {
         return NetState::Hotspot {
             ssid: hotspot_ssid(),
@@ -168,12 +179,7 @@ fn state() -> NetState {
         };
     }
 
-    let addrs = addresses();
-    if addrs.is_empty() {
-        NetState::Waiting
-    } else {
-        NetState::Connected(addrs)
-    }
+    NetState::Waiting
 }
 
 /// True when `wireless.js` reports access point mode.
@@ -208,6 +214,11 @@ fn hotspot_ssid() -> String {
 }
 
 /// Usable addresses, ordered as someone reading the panel would want them.
+///
+/// The access point's own address is excluded: `192.168.211.1` is not
+/// somewhere to connect to over an existing network, and showing it in a list
+/// alongside real addresses would be misleading. It is surfaced through
+/// `NetState::Hotspot` instead, with the SSID that makes it actionable.
 fn addresses() -> Vec<Address> {
     let Ok(ifaces) = if_addrs::get_if_addrs() else {
         return Vec::new();
@@ -220,12 +231,16 @@ fn addresses() -> Vec<Address> {
             if !usable(&ip) {
                 return None;
             }
+            let addr = ip.to_string();
+            if addr == HOTSPOT_ADDR {
+                return None;
+            }
             Some((
                 !is_wireless(&i.name), // wired sorts first
                 ip.is_ipv6(),          // v4 sorts first
                 Address {
                     iface: i.name,
-                    addr: ip.to_string(),
+                    addr,
                 },
             ))
         })
