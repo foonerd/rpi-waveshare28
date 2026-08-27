@@ -1,11 +1,16 @@
-# kernel build dirs
-linux-*/
+# Editors and OS noise
+*.swp
+.DS_Store
+
+# --- kernel/ ---
+# Extracted kernel trees, build products, and packaged output.
+kernel/linux-*/
+kernel/output/
 *.dtbo
 *.ko
 *.ko.xz
-*.tar.gz
-0*
 
-# rust
-/target/
+# --- runtime/ ---
+runtime/target/
+runtime/dist/
 **/*.rs.bk
