@@ -3,11 +3,21 @@
 //! Defaults match the Waveshare SKU 27579 wiring in BCM numbering. Everything
 //! here is overridable so a differently wired board or a clone module with a
 //! different touch address does not need a rebuild.
+//!
+//! The file is optional. A missing file means the reference wiring, which is
+//! what the overwhelming majority of installations want, so requiring one
+//! would be ceremony. A file that exists but does not parse is an error: a
+//! typo in a GPIO number that silently reverts to a default produces a panel
+//! that does not work for reasons nobody can see.
 
 use serde::Deserialize;
 use std::path::Path;
 
 /// Panel and host wiring, plus behaviour knobs.
+///
+/// `deny_unknown_fields` is deliberate. A misspelled key that is quietly
+/// ignored is the worst outcome: the setting appears to be applied, nothing
+/// changes, and the file looks correct. Refusing to start names the typo.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -36,7 +46,11 @@ pub struct Config {
     /// gpiochip to request lines from.
     pub gpiochip: String,
 
-    /// Display rotation applied at init, degrees clockwise.
+    /// Display rotation applied at init, degrees clockwise. 0, 90, 180 or 270.
+    ///
+    /// This is the only place rotation is set. The panel is rotated by the
+    /// display driver and touch coordinates are mapped back through the same
+    /// value, so the two cannot disagree.
     pub rotation: u16,
 
     /// Volumio state endpoint.
@@ -82,19 +96,97 @@ impl Default for Config {
 
 impl Config {
     /// Load from a TOML file, falling back to defaults if it is absent.
-    ///
-    /// A missing file is not an error: the defaults are the reference wiring.
-    /// A malformed file is an error, because silently ignoring a typo in a
-    /// pin number would be worse than refusing to start.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         if !path.exists() {
             tracing::info!(path = %path.display(), "no config file, using defaults");
             return Ok(Self::default());
         }
-        anyhow::bail!(
-            "{} exists but config file parsing is not implemented yet; \
-             remove it to run with the reference defaults",
-            path.display()
-        )
+
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+
+        let cfg: Self = toml::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("parsing {}:\n{e}", path.display()))?;
+
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Reject values that would fail later in a less obvious place.
+    ///
+    /// Checked here rather than at the point of use so a bad file is reported
+    /// at startup, next to the filename, instead of as a panel init failure
+    /// several layers down.
+    fn validate(&self) -> anyhow::Result<()> {
+        if !matches!(self.rotation, 0 | 90 | 180 | 270) {
+            anyhow::bail!("rotation must be 0, 90, 180 or 270, got {}", self.rotation);
+        }
+        if self.touch_addr > 0x7f {
+            anyhow::bail!(
+                "touch_addr must be a 7-bit address, got {:#x}",
+                self.touch_addr
+            );
+        }
+        if self.poll_interval_ms == 0 {
+            anyhow::bail!("poll_interval_ms must be greater than zero");
+        }
+        if self.spi_speed_hz == 0 {
+            anyhow::bail!("spi_speed_hz must be greater than zero");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write(text: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn missing_file_is_defaults() {
+        let cfg = Config::load(Path::new("/nonexistent/waveshare28-panel.toml")).unwrap();
+        assert_eq!(cfg.rotation, 0);
+        assert_eq!(cfg.spi_dev, "/dev/spidev0.0");
+    }
+
+    #[test]
+    fn partial_file_keeps_defaults_for_the_rest() {
+        let f = write("rotation = 90\n");
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.rotation, 90);
+        assert_eq!(cfg.dc_pin, 25);
+        assert_eq!(cfg.touch_addr, 0x1a);
+    }
+
+    #[test]
+    fn unknown_key_is_an_error() {
+        let f = write("rotaton = 90\n");
+        let err = Config::load(f.path()).unwrap_err().to_string();
+        assert!(err.contains("rotaton"), "{err}");
+    }
+
+    #[test]
+    fn bad_rotation_is_an_error() {
+        let f = write("rotation = 45\n");
+        let err = Config::load(f.path()).unwrap_err().to_string();
+        assert!(err.contains("rotation"), "{err}");
+    }
+
+    #[test]
+    fn out_of_range_touch_address_is_an_error() {
+        let f = write("touch_addr = 0x1ff\n");
+        assert!(Config::load(f.path()).is_err());
+    }
+
+    #[test]
+    fn zero_poll_interval_is_an_error() {
+        let f = write("poll_interval_ms = 0\n");
+        assert!(Config::load(f.path()).is_err());
     }
 }
