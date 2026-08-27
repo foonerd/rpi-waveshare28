@@ -37,8 +37,7 @@ const TOUCH_POLL: Duration = Duration::from_millis(5);
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -65,8 +64,7 @@ fn run(cfg: Config) -> Result<()> {
 
     let mut panel = Panel::open(&cfg).context("opening panel")?;
 
-    let mut chip = Chip::new(&cfg.gpiochip)
-        .with_context(|| format!("opening {}", cfg.gpiochip))?;
+    let mut chip = Chip::new(&cfg.gpiochip).with_context(|| format!("opening {}", cfg.gpiochip))?;
 
     // The interrupt is open drain with a pull-up, so it rests high and the
     // controller pulls it low when a report is ready.
@@ -88,8 +86,7 @@ fn run(cfg: Config) -> Result<()> {
 
     touch::reset(&mut touch_rst, &mut Delay).map_err(|e| anyhow!("resetting touch: {e}"))?;
 
-    let i2c = I2cdev::new(&cfg.i2c_dev)
-        .with_context(|| format!("opening {}", cfg.i2c_dev))?;
+    let i2c = I2cdev::new(&cfg.i2c_dev).with_context(|| format!("opening {}", cfg.i2c_dev))?;
     let mut touch = Cst328::new(i2c, cfg.touch_addr);
 
     panel.backlight(true)?;

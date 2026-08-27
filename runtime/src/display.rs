@@ -59,8 +59,8 @@ impl Panel {
         )
         .context("configuring spi")?;
 
-        let mut chip = Chip::new(&cfg.gpiochip)
-            .with_context(|| format!("opening {}", cfg.gpiochip))?;
+        let mut chip =
+            Chip::new(&cfg.gpiochip).with_context(|| format!("opening {}", cfg.gpiochip))?;
 
         let dc = request_output(&mut chip, cfg.dc_pin, 0, "panel dc")?;
         let rst = request_output(&mut chip, cfg.rst_pin, 1, "panel reset")?;

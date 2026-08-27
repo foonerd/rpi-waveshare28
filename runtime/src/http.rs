@@ -159,9 +159,6 @@ mod tests {
     #[test]
     fn rejects_error_status() {
         let raw = b"HTTP/1.1 500 Internal Server Error\r\n\r\nboom";
-        assert!(matches!(
-            split_response(raw),
-            Err(HttpError::Status(500))
-        ));
+        assert!(matches!(split_response(raw), Err(HttpError::Status(500))));
     }
 }
