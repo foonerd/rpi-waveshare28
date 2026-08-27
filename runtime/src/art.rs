@@ -114,8 +114,15 @@ fn worker(
     }
 }
 
-/// Join an origin and a path from the state API, which may be either relative
-/// or already absolute.
+/// Turn an `albumart` value from the state API into a URL to fetch.
+///
+/// Relative paths join to the origin. Absolute ones are fetched directly.
+///
+/// Volumio's `/albumart?url=` looked like a proxy for remote art and is not:
+/// it returns the default artwork regardless of the `url` parameter, encoded
+/// or not, and returns JPEG even when the source is PNG. The browser UI shows
+/// station logos because the browser loads the absolute URL itself. Since
+/// stream art is served over https, that is why this binary carries TLS.
 fn join(base: &str, path: &str) -> String {
     if path.starts_with("http://") || path.starts_with("https://") {
         return path.to_string();
@@ -170,6 +177,9 @@ mod tests {
 
     #[test]
     fn passes_absolute_urls_through() {
-        assert_eq!(join("http://localhost", "http://x/y.jpg"), "http://x/y.jpg");
+        assert_eq!(
+            join("http://localhost:3000", "https://cdn.example/logo.png"),
+            "https://cdn.example/logo.png"
+        );
     }
 }

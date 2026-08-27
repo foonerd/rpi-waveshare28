@@ -1,13 +1,13 @@
-//! Minimal HTTP/1.1 GET over a plain TCP socket.
+//! Minimal HTTP/1.1 GET, over TCP or TLS.
 //!
-//! Deliberately not a crate. The only request this binary makes is against
-//! `http://localhost:3000`, so a general client buys nothing: `ureq` and
-//! `reqwest` both pull `url` -> `idna` -> the `icu_*` normalisation stack, and
-//! carrying a Unicode library to parse a loopback URL is not a trade worth
-//! making on a 512 MB board.
+//! Deliberately not an HTTP client crate. `ureq` and `reqwest` both pull
+//! `url` -> `idna` -> the `icu_*` normalisation stack, which is a Unicode
+//! library carried solely to parse a URL, and it raises the toolchain floor
+//! as a side effect. rustls sits under this instead, so there is exactly one
+//! HTTP implementation and TLS is the only thing added.
 //!
-//! Scope is exactly what is needed and no more: no TLS, no redirects, no
-//! keep-alive, no chunked decoding.
+//! Scope is exactly what is needed and no more: no redirects, no keep-alive,
+//! no chunked decoding.
 //!
 //! The body is delimited by `Content-Length` where the server sends one, and
 //! only falls back to reading until EOF where it does not. An earlier version
@@ -15,15 +15,20 @@
 //! depend on the server actually closing the socket. Volumio does not always
 //! close promptly, and the result was intermittent EAGAIN as the read timeout
 //! expired on a response that had already arrived in full.
+//!
+//! Trust anchors come from `webpki-roots`, compiled in. A statically linked
+//! binary cannot rely on a system certificate store being present, and
+//! Volumio images do not necessarily ship `ca-certificates`.
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Errors a request can produce.
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
-    /// The URL was not a plain `http://host[:port]/path`.
+    /// The URL was not `http://host[:port]/path` or the `https` equivalent.
     #[error("malformed url: {0}")]
     Url(String),
     /// The host did not resolve.
@@ -32,6 +37,9 @@ pub enum HttpError {
     /// Socket-level failure.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// TLS handshake or configuration failure.
+    #[error("tls: {0}")]
+    Tls(String),
     /// Response was not valid HTTP, or the status line was missing.
     #[error("malformed response")]
     Response,
@@ -40,16 +48,24 @@ pub enum HttpError {
     Status(u16),
 }
 
-/// A parsed `http://host:port/path`.
+/// A parsed URL.
 struct Target {
+    /// Host without port, needed separately for TLS server name checking.
+    host: String,
+    /// Host and port, as sent in the Host header and used for resolution.
     authority: String,
     path: String,
+    tls: bool,
 }
 
 fn parse(url: &str) -> Result<Target, HttpError> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| HttpError::Url(url.into()))?;
+    let (rest, tls, default_port) = if let Some(r) = url.strip_prefix("https://") {
+        (r, true, 443)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (r, false, 80)
+    } else {
+        return Err(HttpError::Url(url.into()));
+    };
 
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -60,17 +76,38 @@ fn parse(url: &str) -> Result<Target, HttpError> {
         return Err(HttpError::Url(url.into()));
     }
 
-    // Default the port so `to_socket_addrs` has something to work with.
-    let authority = if authority.contains(':') {
-        authority.to_string()
-    } else {
-        format!("{authority}:80")
+    let (host, authority) = match authority.split_once(':') {
+        Some((h, _)) => (h.to_string(), authority.to_string()),
+        None => (authority.to_string(), format!("{authority}:{default_port}")),
     };
 
     Ok(Target {
+        host,
         authority,
         path: path.to_string(),
+        tls,
     })
+}
+
+/// Shared client configuration.
+///
+/// Built once: assembling the root store parses every trust anchor, which is
+/// wasted work on a 3A+ if it happens per request.
+fn tls_config() -> Result<Arc<rustls::ClientConfig>, HttpError> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+
+    if let Some(c) = CONFIG.get() {
+        return Ok(c.clone());
+    }
+
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let cfg = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+
+    Ok(CONFIG.get_or_init(|| Arc::new(cfg)).clone())
 }
 
 /// Perform a GET and return the response body as a string.
@@ -93,14 +130,31 @@ pub fn get_bytes(url: &str, timeout: Duration) -> Result<Vec<u8>, HttpError> {
         .next()
         .ok_or_else(|| HttpError::Resolve(target.authority.clone()))?;
 
-    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
-    stream.set_nodelay(true)?;
+    let mut sock = TcpStream::connect_timeout(&addr, timeout)?;
+    sock.set_read_timeout(Some(timeout))?;
+    sock.set_write_timeout(Some(timeout))?;
+    sock.set_nodelay(true)?;
 
+    if target.tls {
+        let name = rustls_pki_types::ServerName::try_from(target.host.clone())
+            .map_err(|e| HttpError::Tls(format!("server name {}: {e}", target.host)))?;
+        let conn = rustls::ClientConnection::new(tls_config()?, name)
+            .map_err(|e| HttpError::Tls(e.to_string()))?;
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        exchange(&mut tls, &target)
+    } else {
+        exchange(&mut sock, &target)
+    }
+}
+
+/// Send the request and read the response, over whichever stream.
+///
+/// Split out so the plain and TLS paths share one implementation. The
+/// framing rules are identical; only the transport differs.
+fn exchange<S: Read + Write>(stream: &mut S, target: &Target) -> Result<Vec<u8>, HttpError> {
     // Host header carries the authority as given, including any explicit port.
     let req = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: waveshare28-panel\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: waveshare28-panel\r\nAccept: */*\r\nConnection: close\r\n\r\n",
         target.path, target.authority
     );
     stream.write_all(req.as_bytes())?;
@@ -143,7 +197,10 @@ pub fn get_bytes(url: &str, timeout: Duration) -> Result<Vec<u8>, HttpError> {
         }
         // No Content-Length leaves EOF as the only delimiter available.
         None => {
-            stream.read_to_end(&mut raw)?;
+            // A TLS stream reports close_notify as an error rather than EOF on
+            // some servers; a truncated read here is not worth failing over
+            // when the body is already complete.
+            let _ = stream.read_to_end(&mut raw);
         }
     }
 
@@ -196,8 +253,10 @@ mod tests {
     #[test]
     fn parses_host_port_path() {
         let t = parse("http://localhost:3000/api/v1/getState").unwrap();
+        assert_eq!(t.host, "localhost");
         assert_eq!(t.authority, "localhost:3000");
         assert_eq!(t.path, "/api/v1/getState");
+        assert!(!t.tls);
     }
 
     #[test]
@@ -208,8 +267,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_http() {
-        assert!(parse("https://localhost/x").is_err());
+    fn https_defaults_to_443() {
+        let t = parse("https://cdn.example/logo.png").unwrap();
+        assert_eq!(t.host, "cdn.example");
+        assert_eq!(t.authority, "cdn.example:443");
+        assert_eq!(t.path, "/logo.png");
+        assert!(t.tls);
+    }
+
+    #[test]
+    fn rejects_unknown_scheme() {
+        assert!(parse("ftp://localhost/x").is_err());
+        assert!(parse("localhost/x").is_err());
     }
 
     #[test]
