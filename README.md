@@ -116,6 +116,24 @@ Console does not follow the panel automatically. `con2fbmap 1 1` moves it at
 runtime; `fbcon=map:1` on the kernel command line makes it stick, but
 `cmdline.txt` is build managed on Volumio and OTA will overwrite it.
 
+The console font also needs forcing. fbcon picks a font to fit the
+framebuffer, and at 320x240 it chooses 8x8, giving 40 columns by 30 rows. The
+QR code in `/etc/issue` is drawn with half-block characters, so one cell
+carries two vertical modules and one horizontal; with an 8x8 cell each module
+is 8 pixels wide by 4 tall and the code comes out stretched two to one.
+`fbcon=font:VGA8x16` forces 8x16, giving 40x15 and square modules. The font is
+built into the kernel, so no package is needed, and `kbd` is not available in
+the Volumio repositories anyway.
+
+Both settings therefore belong together on the kernel command line:
+
+    fbcon=map:1 fbcon=font:VGA8x16
+
+At 8x16 the QR fills the panel height almost exactly. That is the QR's own
+size, not the font's: it is regenerated on every IP change by Volumio, so
+shrinking it would mean patching a Volumio-owned file, which this repository
+deliberately does not do.
+
 ## Licence
 
 Apache-2.0, except `kernel/source_files/*/overlays/*.dts`, which is
