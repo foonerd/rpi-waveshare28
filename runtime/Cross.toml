@@ -22,7 +22,14 @@
 # Volumio versions. Slightly larger binary, slower allocator, neither of which
 # matters for a process redrawing a 240x320 buffer a few times a second.
 #
-# Default build targets both musl triples; see scripts/Makefile.
+# ARMv6 and ARMv7 are separate targets. Volumio builds a `+` kernel variant
+# from bcmrpi_defconfig for the Pi Zero, Zero W and Pi 1, which are ARMv6.
+# An armv7 binary dies with SIGILL on those boards.
+#
+# Default build targets all three musl triples; see Makefile.
+
+[target.arm-unknown-linux-musleabihf]
+image = "ghcr.io/cross-rs/arm-unknown-linux-musleabihf:main"
 
 [target.armv7-unknown-linux-musleabihf]
 image = "ghcr.io/cross-rs/armv7-unknown-linux-musleabihf:main"

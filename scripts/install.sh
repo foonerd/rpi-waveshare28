@@ -57,14 +57,29 @@ kernel_version() {
     printf '%s' "${r%%+*}"
 }
 
-# Rust target triple for this machine. Only the musl builds are published:
-# they are statically linked and run on Buster, Bookworm and Trixie alike,
-# which matters because Volumio 3 is Buster and Volumio 4 is Bookworm.
+# Rust target triple for this machine.
+#
+# Only musl builds are published: statically linked, so they run on Buster,
+# Bookworm and Trixie alike, which matters because Volumio 3 is Buster and
+# Volumio 4 is Bookworm.
+#
+# ARMv6 and ARMv7 are separate targets and must not be conflated. Volumio
+# builds a `+` kernel variant from bcmrpi_defconfig for the Pi Zero, Zero W
+# and Pi 1, which are ARMv6. An armv7 binary on those boards dies with SIGILL
+# at the first ARMv7-only instruction, which is a considerably worse failure
+# than refusing to install.
+#
+# Note that uname -m reports the kernel architecture, not the userland. That
+# is the right question here: these binaries are static, so the userland ABI
+# is irrelevant and only the kernel's ability to execute them matters. A
+# 64-bit kernel with a 32-bit userland, which Volumio does not currently
+# ship, would still run the aarch64 binary.
 runtime_arch() {
     case "$(uname -m)" in
-        armv7l|armv6l) printf 'armv7-unknown-linux-musleabihf' ;;
-        aarch64)       printf 'aarch64-unknown-linux-musl' ;;
-        *)             die "unsupported architecture: $(uname -m)" ;;
+        armv6l)  printf 'arm-unknown-linux-musleabihf' ;;
+        armv7l)  printf 'armv7-unknown-linux-musleabihf' ;;
+        aarch64) printf 'aarch64-unknown-linux-musl' ;;
+        *)       die "unsupported architecture: $(uname -m)" ;;
     esac
 }
 

@@ -10,6 +10,11 @@
 # Buster, Bookworm and Trixie alike, which matters because Volumio 3 is Buster
 # and Volumio 4 is Bookworm. The glibc targets build from cross's stock images
 # (glibc 2.31) and would not run on Buster.
+#
+# Three targets, not two. Volumio builds a `+` kernel variant from
+# bcmrpi_defconfig for the Pi Zero, Zero W and Pi 1, which are ARMv6. An
+# armv7 binary dies with SIGILL on those boards, so ARMv6 needs its own
+# triple rather than being folded in with ARMv7.
 
 name: release-runtime
 
@@ -31,6 +36,7 @@ jobs:
       fail-fast: true
       matrix:
         target:
+          - arm-unknown-linux-musleabihf
           - armv7-unknown-linux-musleabihf
           - aarch64-unknown-linux-musl
 

@@ -5,7 +5,7 @@
 # glibc 2.31 or newer and will not run on Volumio 3.
 
 CRATE      := waveshare28-panel
-MUSL       := armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl
+MUSL       := arm-unknown-linux-musleabihf armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl
 GNU        := armv7-unknown-linux-gnueabihf aarch64-unknown-linux-gnu
 DIST       := dist
 
