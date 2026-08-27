@@ -10,6 +10,7 @@ Standalone. Not part of any Volumio or evo release stream.
 
     kernel/     CST328 kernel module and device tree overlay
     runtime/    userspace renderer and touch reader, Rust
+    scripts/    installer
 
 They share nothing but the hardware. Different toolchains, different build
 systems, different outputs. Each has its own README and builds on its own.
@@ -23,6 +24,38 @@ Building both is fine; running both on the same boot is not.
     make runtime
 
 or work in either subtree directly.
+
+## Install
+
+On the target:
+
+    curl -fsSL https://raw.githubusercontent.com/foonerd/rpi-waveshare28/main/scripts/install.sh | sudo bash -s runtime
+
+`runtime`, `kernel` or `both`. Artefacts are fetched from GitHub Releases and
+verified against their published sha256 before installation.
+
+## Releases
+
+Two tag streams, because the two halves have different clocks. A new Volumio
+kernel needs a new module with no source change; a source change needs new
+binaries with no kernel change. Tying both to one version number would mean
+lying about one of them on every release.
+
+    kernel-<x.y.z>      cst328-rpi-<x.y.z>.tar.gz
+    runtime-v<x.y.z>    waveshare28-panel-<target>
+
+Both are built and published by GitHub Actions on tag push, so a published
+artefact is reproducible from the tag rather than from whatever was on a
+workstation that day.
+
+The kernel module must match the running kernel exactly. If there is no
+release for your kernel version the installer says so and stops, rather than
+installing something that will not load.
+
+Only musl runtime binaries are published. They are statically linked and run
+on Buster, Bookworm and Trixie alike, which covers Volumio 3 and Volumio 4.
+The glibc targets build but are not published: cross's stock images are glibc
+2.31, which excludes Buster.
 
 ## Hardware
 
