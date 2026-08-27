@@ -44,6 +44,75 @@ CONFIG_LINE="CONFIG_TOUCHSCREEN_HYNITRON_CSTXXX=m"
 MODULE_PATH="drivers/input/touchscreen/hynitron_cstxxx.ko"
 OVERLAY_DIR="arch/arm/boot/dts/overlays"
 
+# Verify the cross toolchain against the one the Raspberry Pi buildbot used
+# for this exact kernel commit.
+#
+# This is not a style preference. bcm2709_defconfig sets CONFIG_MODVERSIONS=y,
+# so every exported symbol the module uses is CRC-checked at load time against
+# the running kernel. We rebuild the whole kernel to obtain Module.symvers, so
+# those CRCs come from our build. Kconfig evaluates its CC_HAS_* symbols
+# against the actual compiler at configure time, which means the same
+# defconfig fed to a different GCC silently yields a different .config,
+# different struct layouts, and different CRCs. The resulting module loads
+# nowhere and fails with "disagrees about version of symbol module_layout".
+#
+# The compiler is not part of the vermagic string, so this does not present as
+# a vermagic mismatch and is easy to misdiagnose.
+#
+# uname_string in rpi-firmware records the buildbot's toolchain at every
+# commit, so the requirement is derived rather than guessed.
+require_toolchain() {
+    local commit="$1"
+    local uname_url="https://raw.githubusercontent.com/raspberrypi/rpi-firmware/${commit}/uname_string"
+    local uname_string want_major
+
+    echo "!!!  Verifying toolchain against the Raspberry Pi buildbot  !!!"
+
+    if ! uname_string=$(curl -fsSL "${uname_url}"); then
+        echo "!!!  Could not fetch uname_string from ${uname_url}  !!!"
+        echo "!!!  Refusing to build without knowing the required toolchain  !!!"
+        exit 1
+    fi
+
+    echo "    buildbot: ${uname_string}"
+
+    # e.g. "... (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld ..." -> 11
+    want_major=$(sed -n 's/.*arm-linux-gnueabihf-gcc[^)]*) \([0-9]\+\)\..*/\1/p' <<<"${uname_string}")
+
+    if [ -z "${want_major}" ]; then
+        echo "!!!  Could not parse a compiler version out of uname_string  !!!"
+        echo "!!!  Its format changed upstream; fix require_toolchain()  !!!"
+        exit 1
+    fi
+
+    local cc
+    for cc in arm-linux-gnueabihf-gcc aarch64-linux-gnu-gcc; do
+        if ! command -v "${cc}" >/dev/null 2>&1; then
+            echo "!!!  ${cc} not found. Run install_deps_gcc_${want_major}.sh  !!!"
+            exit 1
+        fi
+
+        local have_major
+        have_major=$("${cc}" -dumpversion | cut -d. -f1)
+
+        if [ "${have_major}" != "${want_major}" ]; then
+            echo "!!!  Toolchain mismatch for ${cc}  !!!"
+            echo "!!!    kernel ${KERNEL_VERSION} was built with gcc ${want_major}  !!!"
+            echo "!!!    this machine has gcc ${have_major}  !!!"
+            echo "!!!"
+            echo "!!!  Building anyway produces a module that will not load:"
+            echo "!!!  CONFIG_MODVERSIONS is set, and a different compiler changes"
+            echo "!!!  the generated .config and therefore the symbol CRCs."
+            echo "!!!"
+            echo "!!!  Run install_deps_gcc_${want_major}.sh, then select it with"
+            echo "!!!    sudo update-alternatives --config ${cc}"
+            exit 1
+        fi
+
+        echo "    ok: ${cc} $("${cc}" -dumpfullversion 2>/dev/null || "${cc}" -dumpversion)"
+    done
+}
+
 # Add the config symbol, the overlay source and the overlay Makefile entry to
 # an extracted kernel tree. Idempotent.
 apply_custom() {
@@ -83,6 +152,8 @@ apply_custom() {
 }
 
 echo "!!!  Build CST328 touch module for kernel ${KERNEL_VERSION}  !!!"
+
+require_toolchain "${KERNEL_COMMIT}"
 
 echo "!!!  Download kernel hash info  !!!"
 wget -N https://raw.githubusercontent.com/raspberrypi/rpi-firmware/${KERNEL_COMMIT}/git_hash

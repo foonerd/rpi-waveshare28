@@ -31,10 +31,10 @@ Only needed if you want a kernel input device. The userspace renderer in
 
 ## Build
 
-Cross-compiles. Requires `gcc-arm-linux-gnueabihf` and `gcc-aarch64-linux-gnu`.
-Do not attempt this on the target.
+Cross-compiles. Do not attempt this on the target.
 
     cd build-script
+    ./install_deps_gcc_11.sh
     ./download_build.sh
 
 Set `KERNEL_VERSION` at the top to match the target. The version to commit map
@@ -46,6 +46,34 @@ already on disk. Use it after editing the overlay or driver source, having
 copied the change into the trees.
 
 Output lands in `output/` as `cst328-rpi-<version>.tar.gz` with md5 and sha1.
+
+## The toolchain is not a free choice
+
+The module is only loadable if it is built with the same compiler the
+Raspberry Pi buildbot used for that kernel.
+
+`bcm2709_defconfig` sets `CONFIG_MODVERSIONS=y`, so every exported symbol a
+module uses is CRC-checked against the running kernel at load time. Because
+this build produces the whole kernel to obtain `Module.symvers`, those CRCs
+come from our build. Kconfig evaluates its `CC_HAS_*` symbols against the
+actual compiler at configure time, so the same defconfig fed to a different
+GCC silently yields a different `.config`, different struct layouts, and
+different CRCs. The module then fails to load with `disagrees about version
+of symbol module_layout`.
+
+The compiler is not part of the vermagic string, so this does not present as
+a vermagic mismatch, which makes it easy to misdiagnose.
+
+`rpi-firmware/uname_string` records the buildbot toolchain at every commit.
+For every 6.6 and 6.12 kernel checked so far that is GCC 11.4.0 from Ubuntu
+22.04 with binutils 2.38. Older kernels used other versions, which is why
+volumio-rpi-custom carries several `install_deps` variants.
+
+`download_build.sh` fetches `uname_string` for the target commit, compares it
+against the installed cross compilers, and refuses to start on mismatch. A
+wrong toolchain therefore fails in seconds rather than after an hour of
+building something unloadable. If a future kernel names a different compiler,
+add the matching `install_deps_gcc_<n>.sh` rather than overriding the gate.
 
 ## Install on target
 

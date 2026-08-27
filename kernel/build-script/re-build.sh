@@ -14,6 +14,17 @@ OVERLAY_DIR="arch/arm/boot/dts/overlays"
 
 echo "!!!  Rebuild CST328 touch module for kernel ${KERNEL_VERSION}  !!!"
 
+# The toolchain gate lives in download_build.sh, which produced these trees.
+# Warn rather than fail here: rebuilding after switching compilers is a real
+# way to end up with an unloadable module, and it is worth saying so.
+for cc in arm-linux-gnueabihf-gcc aarch64-linux-gnu-gcc; do
+    if command -v "${cc}" >/dev/null 2>&1; then
+        echo "    ${cc} $("${cc}" -dumpversion)"
+    fi
+done
+echo "!!!  If these differ from the toolchain download_build.sh verified,  !!!"
+echo "!!!  the resulting module will not load. Re-run download_build.sh.    !!!"
+
 for V in "+" "-v7+" "-v7l+" "-v8+"; do
     if [ ! -d "linux-${KERNEL_VERSION}${V}" ]; then
         echo "!!!  linux-${KERNEL_VERSION}${V} not found, run download_build.sh  !!!"
