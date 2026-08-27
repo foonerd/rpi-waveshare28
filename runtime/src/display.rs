@@ -13,9 +13,10 @@ use mipidsi::models::ST7789;
 use mipidsi::options::{ColorInversion, Orientation, Rotation};
 use mipidsi::{Builder, Display};
 
+use crate::art::Art;
 use crate::config::Config;
 use crate::state::PlayerState;
-use crate::ui;
+use crate::ui::{self, Layout, Ticker};
 
 /// Consumer label reported in `gpioinfo`, so a stuck line is traceable to
 /// this process rather than showing as anonymous.
@@ -32,6 +33,7 @@ type PanelDisplay = Display<SpiInterface<'static, SpidevDevice, CdevPin>, ST7789
 pub struct Panel {
     display: PanelDisplay,
     backlight: CdevPin,
+    layout: Layout,
 }
 
 impl Panel {
@@ -74,7 +76,7 @@ impl Panel {
         let di = SpiInterface::new(spi, dc, buffer);
 
         let display = Builder::new(ST7789, di)
-            .display_size(ui::WIDTH as u16, ui::HEIGHT as u16)
+            .display_size(ui::NATIVE_W, ui::NATIVE_H)
             .orientation(Orientation::new().rotate(rotation(cfg.rotation)?))
             // ST7789 panels are normally-black and need inversion on; without
             // it the picture is a photographic negative.
@@ -83,7 +85,16 @@ impl Panel {
             .init(&mut Delay)
             .map_err(|e| anyhow!("panel init failed: {e:?}"))?;
 
-        Ok(Self { display, backlight })
+        Ok(Self {
+            display,
+            backlight,
+            layout: Layout::for_rotation(cfg.rotation),
+        })
+    }
+
+    /// The layout this panel was opened with.
+    pub fn layout(&self) -> &Layout {
+        &self.layout
     }
 
     /// Turn the backlight on or off.
@@ -101,8 +112,43 @@ impl Panel {
     }
 
     /// Redraw the whole screen for the given state.
-    pub fn render(&mut self, state: &PlayerState) -> Result<()> {
-        ui::draw(&mut self.display, state).map_err(|e| anyhow!("drawing: {e:?}"))
+    pub fn render(
+        &mut self,
+        state: &PlayerState,
+        art: Option<&Art>,
+        title: &Ticker,
+        artist: &Ticker,
+    ) -> Result<()> {
+        ui::draw(&mut self.display, &self.layout, state, art, title, artist)
+            .map_err(|e| anyhow!("drawing: {e:?}"))
+    }
+
+    /// Repaint the album art only.
+    pub fn render_art(&mut self, art: Option<&Art>) -> Result<()> {
+        ui::draw_art(&mut self.display, &self.layout, art).map_err(|e| anyhow!("drawing: {e:?}"))
+    }
+
+    /// The size of the art box, so the loader knows what to scale to.
+    pub fn art_size(&self) -> u32 {
+        self.layout.art.size.width.min(self.layout.art.size.height)
+    }
+
+    /// Repaint the scrolling rows only.
+    pub fn render_rows(&mut self, title: &Ticker, artist: &Ticker) -> Result<()> {
+        ui::draw_rows(&mut self.display, &self.layout, title, artist)
+            .map_err(|e| anyhow!("drawing: {e:?}"))
+    }
+
+    /// Repaint the progress bar only.
+    pub fn render_progress(&mut self, state: &PlayerState) -> Result<()> {
+        ui::draw_progress(&mut self.display, &self.layout, state)
+            .map_err(|e| anyhow!("drawing: {e:?}"))
+    }
+
+    /// Repaint the volume slider only.
+    pub fn render_volume(&mut self, state: &PlayerState) -> Result<()> {
+        ui::draw_volume(&mut self.display, &self.layout, state)
+            .map_err(|e| anyhow!("drawing: {e:?}"))
     }
 }
 

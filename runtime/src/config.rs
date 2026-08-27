@@ -43,6 +43,8 @@ pub struct Config {
     pub state_url: String,
     /// Volumio command endpoint base. The `cmd` query is appended.
     pub command_url: String,
+    /// Origin the relative `albumart` path from the state API is joined to.
+    pub art_base: String,
     /// How often to poll it, milliseconds.
     pub poll_interval_ms: u64,
     /// Minimum gap between two accepted touches, milliseconds. The controller
@@ -71,6 +73,7 @@ impl Default for Config {
 
             state_url: "http://localhost:3000/api/v1/getState".into(),
             command_url: "http://localhost:3000/api/v1/commands/".into(),
+            art_base: "http://localhost:3000".into(),
             poll_interval_ms: 500,
             touch_debounce_ms: 300,
         }

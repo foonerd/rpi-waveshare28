@@ -2,7 +2,7 @@
 name = "waveshare28-panel"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/foonerd/rpi-waveshare28"
 description = "Userspace renderer and touch reader for the Waveshare 2.8 inch SPI LCD (ST7789V + CST328) on Raspberry Pi"
@@ -21,6 +21,10 @@ embedded-graphics = "0.8"
 embedded-hal = "1"
 linux-embedded-hal = { version = "0.5", features = ["gpio_cdev"] }
 gpio-cdev = "0.6"
+# Album art. Volumio's /albumart serves PNG for local files and proxies
+# whatever a stream provides, so both codecs are needed. default-features off
+# keeps the other twenty formats and their dependencies out of the tree.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

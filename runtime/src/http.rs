@@ -7,8 +7,14 @@
 //! making on a 512 MB board.
 //!
 //! Scope is exactly what is needed and no more: no TLS, no redirects, no
-//! keep-alive, no chunked decoding. `Connection: close` is sent so the body is
-//! delimited by EOF, which sidesteps chunked transfer entirely.
+//! keep-alive, no chunked decoding.
+//!
+//! The body is delimited by `Content-Length` where the server sends one, and
+//! only falls back to reading until EOF where it does not. An earlier version
+//! sent `Connection: close` and always read to EOF, which made every request
+//! depend on the server actually closing the socket. Volumio does not always
+//! close promptly, and the result was intermittent EAGAIN as the read timeout
+//! expired on a response that had already arrived in full.
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -68,10 +74,16 @@ fn parse(url: &str) -> Result<Target, HttpError> {
 }
 
 /// Perform a GET and return the response body as a string.
+pub fn get(url: &str, timeout: Duration) -> Result<String, HttpError> {
+    let body = get_bytes(url, timeout)?;
+    String::from_utf8(body).map_err(|_| HttpError::Response)
+}
+
+/// Perform a GET and return the raw response body.
 ///
 /// `timeout` applies separately to connect, read and write, so a stalled
 /// server cannot hold the caller for longer than roughly three times it.
-pub fn get(url: &str, timeout: Duration) -> Result<String, HttpError> {
+pub fn get_bytes(url: &str, timeout: Duration) -> Result<Vec<u8>, HttpError> {
     let target = parse(url)?;
 
     let addr = target
@@ -94,32 +106,82 @@ pub fn get(url: &str, timeout: Duration) -> Result<String, HttpError> {
     stream.write_all(req.as_bytes())?;
     stream.flush()?;
 
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw)?;
+    // Read until the header block is complete, then use Content-Length to
+    // decide how much body to expect. Reading blindly to EOF would block until
+    // the read timeout whenever the server keeps the socket open, regardless
+    // of the response having already arrived.
+    let mut raw = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 2048];
 
-    split_response(&raw)
-}
+    let header_end = loop {
+        if let Some(i) = find_header_end(&raw) {
+            break i;
+        }
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            return Err(HttpError::Response);
+        }
+        raw.extend_from_slice(&chunk[..n]);
+    };
 
-/// Split a raw response into status and body, and check the status.
-fn split_response(raw: &[u8]) -> Result<String, HttpError> {
-    let sep = find_header_end(raw).ok_or(HttpError::Response)?;
-    let head = std::str::from_utf8(&raw[..sep]).map_err(|_| HttpError::Response)?;
+    let head = std::str::from_utf8(&raw[..header_end]).map_err(|_| HttpError::Response)?;
+    let code = status_code(head)?;
+    let want = content_length(head);
 
-    let status_line = head.lines().next().ok_or(HttpError::Response)?;
-    let code: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or(HttpError::Response)?
-        .parse()
-        .map_err(|_| HttpError::Response)?;
+    // +4 steps over the blank line terminator.
+    let body_start = header_end + 4;
+
+    match want {
+        Some(len) => {
+            while raw.len() < body_start + len {
+                let n = stream.read(&mut chunk)?;
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&chunk[..n]);
+            }
+        }
+        // No Content-Length leaves EOF as the only delimiter available.
+        None => {
+            stream.read_to_end(&mut raw)?;
+        }
+    }
 
     if !(200..300).contains(&code) {
         return Err(HttpError::Status(code));
     }
 
-    // +4 to step over the blank line terminator.
-    let body = &raw[sep + 4..];
-    String::from_utf8(body.to_vec()).map_err(|_| HttpError::Response)
+    let end = match want {
+        Some(len) => (body_start + len).min(raw.len()),
+        None => raw.len(),
+    };
+
+    Ok(raw[body_start..end].to_vec())
+}
+
+/// Parse the status code out of a header block.
+fn status_code(head: &str) -> Result<u16, HttpError> {
+    head.lines()
+        .next()
+        .ok_or(HttpError::Response)?
+        .split_whitespace()
+        .nth(1)
+        .ok_or(HttpError::Response)?
+        .parse()
+        .map_err(|_| HttpError::Response)
+}
+
+/// Content-Length from a header block, if present and parseable.
+fn content_length(head: &str) -> Option<usize> {
+    head.lines()
+        .skip(1)
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim())
+        })
+        .and_then(|v| v.parse().ok())
 }
 
 /// Index of the CRLFCRLF that ends the header block.
@@ -151,14 +213,28 @@ mod tests {
     }
 
     #[test]
-    fn splits_body() {
-        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"a\":1}";
-        assert_eq!(split_response(raw).unwrap(), "{\"a\":1}");
+    fn reads_status_line() {
+        assert_eq!(status_code("HTTP/1.1 200 OK\r\nX: y").unwrap(), 200);
+        assert_eq!(
+            status_code("HTTP/1.1 500 Internal Server Error").unwrap(),
+            500
+        );
     }
 
     #[test]
-    fn rejects_error_status() {
-        let raw = b"HTTP/1.1 500 Internal Server Error\r\n\r\nboom";
-        assert!(matches!(split_response(raw), Err(HttpError::Status(500))));
+    fn reads_content_length_case_insensitively() {
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\ncontent-length: 42";
+        assert_eq!(content_length(head), Some(42));
+    }
+
+    #[test]
+    fn absent_content_length_is_none() {
+        assert_eq!(content_length("HTTP/1.1 200 OK\r\nX: y"), None);
+    }
+
+    #[test]
+    fn finds_header_terminator() {
+        assert_eq!(find_header_end(b"AB\r\n\r\nbody"), Some(2));
+        assert_eq!(find_header_end(b"no terminator"), None);
     }
 }

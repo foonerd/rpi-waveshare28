@@ -137,7 +137,10 @@ install_kernel() {
     log "running kernel $(kernel_release), looking for release ${tag}"
 
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    # Double quotes so the path is baked into the trap at declaration. With
+    # single quotes the expansion happens when the trap fires, by which point
+    # the local is out of scope and set -u turns it into an error.
+    trap "rm -rf '${tmp}'" RETURN
 
     if ! curl -fsIL --connect-timeout 15 -o /dev/null "$url" 2>/dev/null; then
         die "no published module for kernel ${kver}.
@@ -177,7 +180,7 @@ install_runtime() {
     url="${RELEASE_BASE}/${RUNTIME_TAG}/waveshare28-panel-${arch}"
 
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' RETURN
+    trap "rm -rf '${tmp}'" RETURN
 
     fetch "$url" "${tmp}/waveshare28-panel"
     fetch "${url}.sha256" "${tmp}/waveshare28-panel.sha256"

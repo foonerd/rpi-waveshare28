@@ -39,12 +39,21 @@ pub struct PlayerState {
     pub samplerate: Option<String>,
     /// Bit depth as a display string, e.g. "16 bit".
     pub bitdepth: Option<String>,
+    /// Output volume, 0 to 100.
+    pub volume: Option<u8>,
+    /// Mute state.
+    pub mute: Option<bool>,
 }
 
 impl PlayerState {
     /// True when the player is actively playing.
     pub fn is_playing(&self) -> bool {
         self.status.as_deref() == Some("play")
+    }
+
+    /// True when output is muted.
+    pub fn is_muted(&self) -> bool {
+        self.mute.unwrap_or(false)
     }
 
     /// Elapsed fraction of the track, 0.0 to 1.0, if both fields are present.
@@ -59,6 +68,25 @@ impl PlayerState {
         }
         let dur_ms = dur_s.saturating_mul(1000);
         Some((seek_ms.min(dur_ms) as f32) / (dur_ms as f32))
+    }
+
+    /// True when two states describe the same screen apart from the parts
+    /// that are repainted individually.
+    ///
+    /// `seek` advances every second while playing and volume can change at any
+    /// time, so comparing whole states makes them differ on nearly every poll.
+    /// Clearing and repainting the panel that often is visible as a flicker.
+    /// Everything here changes only when the track or transport state does, so
+    /// this is what gates a full redraw; progress and volume are repainted in
+    /// place.
+    pub fn same_scene(&self, other: &Self) -> bool {
+        self.status == other.status
+            && self.title == other.title
+            && self.artist == other.artist
+            && self.album == other.album
+            && self.duration == other.duration
+            && self.samplerate == other.samplerate
+            && self.bitdepth == other.bitdepth
     }
 }
 
@@ -100,15 +128,18 @@ pub enum Command {
     Toggle,
     /// Next track.
     Next,
+    /// Set volume to a percentage.
+    Volume(u8),
 }
 
 impl Command {
-    /// The `cmd` query value Volumio expects.
-    fn as_str(self) -> &'static str {
+    /// The query string Volumio expects, after the base URL.
+    fn query(self) -> String {
         match self {
-            Command::Prev => "prev",
-            Command::Toggle => "toggle",
-            Command::Next => "next",
+            Command::Prev => "cmd=prev".into(),
+            Command::Toggle => "cmd=toggle".into(),
+            Command::Next => "cmd=next".into(),
+            Command::Volume(v) => format!("cmd=volume&volume={}", v.min(100)),
         }
     }
 }
@@ -130,7 +161,7 @@ impl CommandSink {
 
     /// Send a command. The response body is discarded; only success matters.
     pub fn send(&self, cmd: Command) -> anyhow::Result<()> {
-        let url = format!("{}?cmd={}", self.base, cmd.as_str());
+        let url = format!("{}?{}", self.base, cmd.query());
         http::get(&url, self.timeout)?;
         Ok(())
     }
