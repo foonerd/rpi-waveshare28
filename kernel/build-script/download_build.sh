@@ -169,12 +169,11 @@ tar xzf ${GIT_HASH}.tar.gz
 rm ${GIT_HASH}.tar.gz
 mv linux-${GIT_HASH}/ linux-${KERNEL_VERSION}+/
 
-echo "!!!  Create git repo  !!!"
-cd linux-${KERNEL_VERSION}+/
-git init
-git add --all
-git commit -q -m "extracted files"
-cd ..
+# No git init here. volumio-rpi-custom does that because it applies its
+# changes with `git apply` and wants a baseline to diff against. This script
+# edits the tree directly in apply_custom(), so a repository would serve
+# nothing, would need an author identity that CI does not have, and would be
+# copied into all three variant trees.
 
 apply_custom "linux-${KERNEL_VERSION}+"
 
