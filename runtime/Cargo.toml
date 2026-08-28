@@ -53,9 +53,15 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# mmap of /dev/fbN. The crate contains the unsafe; this package forbids it.
+# fbtft deferred IO only flushes pages dirtied via mmap, so write() on the
+# device node is not a substitute.
+memmap2 = "0.9"
 
 [lints.rust]
-unsafe_code = "forbid"
+# deny rather than forbid: src/fbdev.rs has one mmap call. fbtft deferred IO
+# only flushes pages dirtied via mmap, so that call cannot be removed.
+unsafe_code = "deny"
 
 [dev-dependencies]
 tempfile = "3"

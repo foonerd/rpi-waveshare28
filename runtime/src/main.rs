@@ -1,17 +1,14 @@
 //! Userspace renderer and touch reader for the Waveshare 2.8 inch SPI LCD.
 //!
-//! Owns the panel directly over `/dev/spidev0.0` and the touch controller over
-//! `/dev/i2c-1`. No X, no DRM, no compositor, no kernel display or input
-//! driver. Requires only `dtparam=spi=on` in `/boot/userconfig.txt`; I2C is
-//! already enabled on Volumio.
-//!
-//! Note that this is mutually exclusive with the kernel display path. Loading
-//! an fbtft or mipi-dbi overlay on spi0 cs0 disables the spidev node, and
-//! `/dev/spidev0.0` will not exist for this process to open.
+//! Two display backends. `spi` owns `/dev/spidev0.0` and cannot coexist with
+//! an fbtft overlay. `framebuffer` draws into `/dev/fb1` while fbtft holds
+//! the bus, which is how Plymouth can run in the initramfs and this process
+//! can take over after `plymouth-quit`. Touch is always `/dev/i2c-1`.
 
 mod art;
 mod config;
 mod display;
+mod fbdev;
 mod http;
 mod input;
 mod net;

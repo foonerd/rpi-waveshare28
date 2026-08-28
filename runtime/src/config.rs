@@ -13,6 +13,34 @@
 use serde::Deserialize;
 use std::path::Path;
 
+/// How the renderer talks to the panel.
+///
+/// `spi` owns `/dev/spidev0.0` and the DC/reset/backlight GPIOs. `framebuffer`
+/// draws into an existing `/dev/fbN` and claims none of those lines, so it can
+/// run while fbtft holds the bus for Plymouth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    Spi,
+    Framebuffer,
+}
+
+impl Default for Backend {
+    fn default() -> Self {
+        Self::Spi
+    }
+}
+
+/// Clockwise degrees to the counter-clockwise value fbtft's `rotate` uses
+/// for the same physical orientation.
+pub fn fbtft_rotate(clockwise: u16) -> u16 {
+    match clockwise {
+        90 => 270,
+        270 => 90,
+        other => other,
+    }
+}
+
 /// Panel and host wiring, plus behaviour knobs.
 ///
 /// `deny_unknown_fields` is deliberate. A misspelled key that is quietly
@@ -21,6 +49,10 @@ use std::path::Path;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Drawing path. See [`Backend`].
+    pub backend: Backend,
+    /// Framebuffer device used when `backend` is `framebuffer`.
+    pub fb_dev: String,
     /// SPI character device the ST7789V is on.
     pub spi_dev: String,
     /// SPI clock in Hz. The bcm2835 divides core_freq by an even integer, so
@@ -70,6 +102,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            backend: Backend::Spi,
+            fb_dev: "/dev/fb1".into(),
             spi_dev: "/dev/spidev0.0".into(),
             spi_speed_hz: 32_000_000,
             dc_pin: 25,
@@ -133,6 +167,12 @@ impl Config {
         if self.spi_speed_hz == 0 {
             anyhow::bail!("spi_speed_hz must be greater than zero");
         }
+        if self.fb_dev.is_empty() {
+            anyhow::bail!("fb_dev must not be empty");
+        }
+        if self.spi_dev.is_empty() {
+            anyhow::bail!("spi_dev must not be empty");
+        }
         Ok(())
     }
 }
@@ -152,7 +192,9 @@ mod tests {
     fn missing_file_is_defaults() {
         let cfg = Config::load(Path::new("/nonexistent/waveshare28-panel.toml")).unwrap();
         assert_eq!(cfg.rotation, 0);
+        assert_eq!(cfg.backend, Backend::Spi);
         assert_eq!(cfg.spi_dev, "/dev/spidev0.0");
+        assert_eq!(cfg.fb_dev, "/dev/fb1");
     }
 
     #[test]
@@ -188,5 +230,22 @@ mod tests {
     fn zero_poll_interval_is_an_error() {
         let f = write("poll_interval_ms = 0\n");
         assert!(Config::load(f.path()).is_err());
+    }
+
+    #[test]
+    fn framebuffer_backend_parses() {
+        let f = write("backend = \"framebuffer\"\nfb_dev = \"/dev/fb1\"\nrotation = 270\n");
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.backend, Backend::Framebuffer);
+        assert_eq!(cfg.rotation, 270);
+        assert_eq!(fbtft_rotate(cfg.rotation), 90);
+    }
+
+    #[test]
+    fn fbtft_rotate_is_the_counter_clockwise_counterpart() {
+        assert_eq!(fbtft_rotate(0), 0);
+        assert_eq!(fbtft_rotate(90), 270);
+        assert_eq!(fbtft_rotate(180), 180);
+        assert_eq!(fbtft_rotate(270), 90);
     }
 }
