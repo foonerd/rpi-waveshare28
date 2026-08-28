@@ -2,8 +2,9 @@
 
 Userspace renderer and touch reader for the Waveshare 2.8 inch SPI LCD.
 
-Drives the ST7789V directly over `/dev/spidev0.0` and reads the CST328 over
-`/dev/i2c-1`. No X, no DRM, no compositor, no kernel display or input driver.
+Two display backends, plus a CST328 reader over `/dev/i2c-1`. No X, no DRM,
+no compositor, no kernel input driver. `spi` drives the ST7789V over
+`/dev/spidev0.0`. `framebuffer` mmaps `/dev/fb1` while fbtft holds the bus.
 
 Independent of `kernel/`. Nothing is shared between them.
 
@@ -16,23 +17,21 @@ xrandr, backlight), none of which hold for an SPI panel.
 
 This binary is around 2 MB resident against Chromium's hundreds.
 
-## Mutually exclusive with the kernel display path
+## Two backends, one SPI chip select
 
-One SPI chip select, one owner. An fbtft or mipi-dbi overlay on spi0 cs0
-disables the spidev node, and the SPI core refuses a second device on a
-claimed chip select.
+An fbtft overlay on spi0 cs0 disables `/dev/spidev0.0`. Firmware-applied
+(in `userconfig.txt`) it cannot be removed later, which is also why Plymouth
+can bind `/dev/fb1` in the initramfs.
 
-An overlay in `/boot/userconfig.txt` is merged into the device tree by the
-firmware before the kernel starts, so it cannot be removed at runtime and the
-renderer can never take the panel on that boot. `waveshare28-config` removes
-such lines for this reason.
+    backend = "spi"            # owns the bus; configurator strips fbtft
+    backend = "framebuffer"    # mmaps /dev/fb1; configurator keeps fbtft
 
-Requires only:
+`framebuffer` claims neither SPI nor the DC/reset/backlight GPIOs. Touch
+stays on i2cdev. I2C is already enabled on Volumio via `dtparam=i2c_arm=on`
+in `volumioconfig.txt`.
 
-    dtparam=spi=on
-
-I2C is already enabled on Volumio via `dtparam=i2c_arm=on` in
-`volumioconfig.txt`.
+fbtft `rotate` is counter-clockwise. `rotation=270` is `dtparam=rotate=90`.
+The framebuffer size must match the layout for that rotation or open fails.
 
 ## What it shows
 
@@ -58,7 +57,8 @@ worse than a slightly stale player.
 
     src/main.rs     process wiring, the poll loop, and the status transition
     src/config.rs   pin map and behaviour, defaults match SKU 27579
-    src/display.rs  panel bring-up and the drawing surface
+    src/display.rs  panel bring-up; spi and framebuffer backends
+    src/fbdev.rs    mmap of /dev/fbN, RGB565 DrawTarget
     src/input.rs    touch thread, blocked on a GPIO edge event
     src/touch.rs    CST328 reader
     src/net.rs      host addresses and network state
@@ -138,11 +138,13 @@ error: a misspelled key that is quietly ignored produces a panel that does not
 do what the file says for reasons nobody can see.
 
     rotation = 90          # degrees clockwise: 0, 90, 180, 270
+    backend = "spi"        # or "framebuffer"
     spi_speed_hz = 32000000
 
-Rotation drives both the panel and the touch mapping. The controller always
-reports in its native 240x320 frame regardless of what the display driver was
-told, so `Layout::map` applies the inverse transform.
+Rotation drives layout and touch mapping. On the SPI backend it also rotates
+the panel. On the framebuffer backend fbtft has already rotated the buffer;
+the size must match. The controller always reports in its native 240x320
+frame, so `Layout::map` applies the inverse transform.
 
 ## Status
 

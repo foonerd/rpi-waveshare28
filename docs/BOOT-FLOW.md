@@ -342,13 +342,11 @@ timing was measured on the device tonight rather than reasoned about.
 
 ## Open questions before implementation
 
-Both resolved. The splash unit is not kept: Plymouth binds before the
-framebuffer exists, so it cost an fbtft load and unload for nothing. Between
-the renderer starting and the first address arriving the panel shows the
-hostname and "waiting for network", which is at least evidence the board is
-alive.
+Both resolved. The splash unit that applied fbtft after Plymouth started is
+not kept. Firmware-applied fbtft in `userconfig.txt` is the path that puts
+`/dev/fb1` in front of Plymouth. The renderer then uses `backend=framebuffer`
+and draws into that device after `plymouth-quit`.
 
-Still open, and outside this repository: whether a splash is worth an
-initramfs hook in `volumio-os`. `volumio-plymouth-adaptive` already ships an
-init-premount hook, so the mechanism exists; what is untested is whether
-`dtoverlay` or a direct configfs write works that early.
+Still open, and outside this repository: whether an initramfs hook could
+apply the overlay, let Plymouth run, and remove it so the SPI backend could
+own the bus. Not required for the framebuffer backend.

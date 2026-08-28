@@ -80,10 +80,11 @@ Observed: `plymouth-start.service` at 20:56:36, splash unit created `fb1` at
 those 37 seconds.
 
 Consequence: a boot splash on this panel requires fbtft to exist before the
-initramfs plymouth hook runs. That means either `userconfig.txt`, which makes
-the overlay unremovable and rules out the renderer, or applying it from
-inside the initramfs, which means a change to `volumio-os` and its
-`volumio.initrd`, not something this repository or an installer can do.
+initramfs plymouth hook runs. `userconfig.txt` does that, and makes the
+overlay unremovable, so `/dev/spidev0.0` is gone for the boot. The renderer
+shares that framebuffer with `backend=framebuffer` instead of opening
+spidev. Applying the overlay from inside the initramfs, so it could be
+removed after `plymouth-quit`, is still a `volumio-os` change and untested.
 
 Open question, untested: whether `dtoverlay` or a direct configfs write works
 from an init-premount hook. `volumio-plymouth-adaptive` already ships such a
@@ -132,7 +133,8 @@ Both console settings live in `cmdline.txt`:
     fbcon=map:1 fbcon=font:VGA8x16
 
 `cmdline.txt` is inside the OTA kernel tar, so it is replaced when an update
-ships one. Not every update does.
+ships one. Not every update does. `waveshare28-config apply` rewrites the
+`fbcon=` tokens from `backend`; `verify` reports when an OTA has dropped them.
 
 ### Volumio's /albumart does not proxy remote art
 

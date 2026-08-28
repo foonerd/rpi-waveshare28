@@ -5,9 +5,9 @@
 #   kernel/   cross-compiles a kernel module and a device tree overlay
 #   runtime/  cross-compiles a userspace Rust binary
 #
-# They are mutually exclusive at runtime on a given boot: loading a display
-# overlay on spi0 cs0 removes /dev/spidev0.0, which the runtime needs. Building
-# both is fine; running both is not.
+# backend=spi cannot share spi0 cs0 with an fbtft overlay. backend=framebuffer
+# can: it draws into /dev/fb1 while fbtft holds the bus. Building both halves
+# is always fine.
 
 .PHONY: help kernel runtime validate fmt-fix dist clean
 

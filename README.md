@@ -16,13 +16,11 @@ Standalone. Not part of any Volumio or evo release stream.
 They share nothing but the hardware. Different toolchains, different build
 systems, different outputs. Each has its own README and builds on its own.
 
-They are also mutually exclusive at runtime, and not by choice: there is one
-SPI chip select and the SPI core refuses a second device on a claimed one. A
-display overlay on spi0 cs0 disables the spidev node the renderer needs.
-
-Worse, an overlay applied from `userconfig.txt` is merged into the device tree
-by the firmware before the kernel starts, so it cannot be removed at runtime
-either. The configurator removes such lines for that reason.
+The SPI backend and an fbtft overlay cannot share spi0 cs0. A firmware-applied
+overlay in `userconfig.txt` cannot be removed later, which is why Plymouth
+can bind `/dev/fb1` in the initramfs. `backend=framebuffer` draws into that
+device after `plymouth-quit`. `backend=spi` owns the bus and the configurator
+strips the fbtft lines.
 
     make validate   fmt, clippy and tests for the runtime, no build
     make runtime    validate then cross-build the renderer
@@ -78,10 +76,12 @@ The renderer starts early and does not wait for `volumio.service`. Without
 that the panel is dark for most of a minute, and the address is the one thing
 someone needs before the player is reachable.
 
-There is no boot splash on this panel. Plymouth binds its framebuffer in the
-initramfs and does not adopt one created later, so a splash here would need a
-change in `volumio-os` rather than anything an installer can do. See
-`docs/BOOT-FLOW.md`.
+Plymouth on this panel needs fbtft in `userconfig.txt` so `/dev/fb1` exists
+before the initramfs hook starts `plymouthd`. That overlay owns the SPI bus
+for the life of the boot. `backend=framebuffer` is the renderer path that
+shares it: the process mmaps `/dev/fb1` after `plymouth-quit` and does not
+open `/dev/spidev0.0`. `backend=spi` is the original path and removes the
+fbtft lines. See `docs/BOOT-FLOW.md`.
 
 ## Releases
 
@@ -139,16 +139,16 @@ All `dtparam` and `dtoverlay` lines go in `/boot/userconfig.txt`. Never edit
 `config.txt` or `volumioconfig.txt`; they are system managed and OTA
 overwrites them.
 
-For the renderer, the configurator maintains exactly two lines:
+For `backend=spi` the configurator maintains:
 
     dtparam=spi=on
     dtoverlay=cst328
 
-I2C is already enabled on Volumio. SPI is not.
-
-For the kernel display path, which is mutually exclusive with the renderer:
+For `backend=framebuffer` it keeps those and adds the fbtft set Plymouth
+needs. I2C is already enabled on Volumio. SPI is not.
 
     dtparam=spi=on
+    dtoverlay=cst328
     dtoverlay=fbtft,spi0-0,st7789v
     dtparam=width=240,height=320
     dtparam=reset_pin=27,dc_pin=25
@@ -167,8 +167,8 @@ number in each.
 
 ## Known constraints
 
-These apply to the kernel display path. The renderer does not use fbtft, X or
-the console.
+These apply to the kernel display path and to `backend=framebuffer`, which
+shares that framebuffer. They do not apply to `backend=spi`.
 
 The fbtft backlight device at `/sys/class/backlight/fb_st7789v/` reports
 `max_brightness` of 0. It is a GPIO backlight with no usable range: the only
@@ -180,9 +180,11 @@ There is no DRM device when driving this panel via fbtft, so X requires the
 Without a `Screen` section naming the device, autoconfiguration discards it
 with `Screen 0 deleted because of no matching config section`.
 
-Console does not follow the panel automatically. `con2fbmap 1 1` moves it at
-runtime; `fbcon=map:1` on the kernel command line makes it stick, but
-`cmdline.txt` is build managed on Volumio and OTA will overwrite it.
+Console does not follow the panel automatically. `waveshare28-config` writes
+`fbcon=map:1 fbcon=font:VGA8x16` into `cmdline.txt` for `backend=framebuffer`
+and removes them for `backend=spi`. `cmdline.txt` is inside the OTA kernel
+tar, so a kernel update can wipe the tokens; `verify` reports that and
+`apply` puts them back.
 
 The console font also needs forcing. fbcon picks a font to fit the
 framebuffer, and at 320x240 it chooses 8x8, giving 40 columns by 30 rows. The
