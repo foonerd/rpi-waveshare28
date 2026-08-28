@@ -96,6 +96,36 @@ pub struct StateSource {
     timeout: Duration,
 }
 
+/// Body of `GET /status`. Set by the backend at boot: `starting` until
+/// plugins finish plus seven seconds, then `ready`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemStatus {
+    /// Express is up, plugins are still loading.
+    Starting,
+    /// `BOOT COMPLETED`. Safe to call getState for the player screen.
+    Ready,
+    /// Backend reported `error`.
+    Error,
+}
+
+impl SystemStatus {
+    /// Parse the plain-text `/status` body. Unknown values are `None`.
+    pub fn parse(body: &str) -> Option<Self> {
+        match body.trim() {
+            "ready" => Some(Self::Ready),
+            "starting" => Some(Self::Starting),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+/// Fetch `/status`. `None` if the socket is down or the body is unrecognised.
+pub fn poll_system_status(url: &str, timeout: Duration) -> Option<SystemStatus> {
+    let body = http::get(url, timeout).ok()?;
+    SystemStatus::parse(&body)
+}
+
 impl StateSource {
     /// Build a client. The timeout should be shorter than the poll interval so
     /// a stalled request cannot queue up behind the next one.
@@ -164,5 +194,21 @@ impl CommandSink {
         let url = format!("{}?{}", self.base, cmd.query());
         http::get(&url, self.timeout)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::SystemStatus;
+
+    #[test]
+    fn parses_the_three_known_bodies() {
+        assert_eq!(SystemStatus::parse("ready\n"), Some(SystemStatus::Ready));
+        assert_eq!(
+            SystemStatus::parse("starting"),
+            Some(SystemStatus::Starting)
+        );
+        assert_eq!(SystemStatus::parse("error"), Some(SystemStatus::Error));
+        assert_eq!(SystemStatus::parse("nope"), None);
     }
 }

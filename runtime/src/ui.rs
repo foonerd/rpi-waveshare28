@@ -19,7 +19,7 @@ use embedded_graphics::{
 };
 
 use crate::art::Art;
-use crate::net::{HostInfo, NetState};
+use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::touch::Touch;
 
@@ -221,6 +221,8 @@ const STEP: i32 = 1;
 const LINE_GAP: i32 = 2;
 /// Vertical gap between fields.
 const FIELD_GAP: i32 = 8;
+/// Pixels below the pinned `starting` footer.
+const FOOTER_MARGIN: i32 = 16;
 
 /// Greedy word wrap to a pixel width, for a monospaced font.
 ///
@@ -444,9 +446,14 @@ where
 /// Draw the status screen shown before the player answers.
 ///
 /// This is what is on the panel from a few seconds after power on until
-/// Volumio's node process responds, which is most of a minute. It exists
+/// `GET /status` is `ready` and the first `getState` succeeds. It exists
 /// because the alternative is a dark screen, and because the address is the
 /// one thing someone needs before the player is reachable.
+///
+/// `footer` is an optional dim line pinned near the bottom, used while
+/// the backend is still starting. Title font, so it is readable at arm's
+/// length, and kept off the address block so it does not read as another
+/// address. One character of spinner so the width does not jump.
 ///
 /// Uses the whole frame rather than the player's text column: a full IPv6
 /// address is 39 characters, 234 pixels at the meta font, and the column is
@@ -455,7 +462,12 @@ where
 /// Composed in memory and blitted once, same as the text pane, for the same
 /// reason: drawing onto a clipped view of the panel forces per-pixel
 /// addressing and flickers.
-pub fn draw_status<D>(target: &mut D, layout: &Layout, host: &HostInfo) -> Result<(), D::Error>
+pub fn draw_status<D>(
+    target: &mut D,
+    layout: &Layout,
+    host: &HostInfo,
+    footer: Option<&str>,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -471,43 +483,63 @@ where
     let title = MonoTextStyle::new(TITLE_FONT, Rgb565::WHITE);
     let meta = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
     let dim = MonoTextStyle::new(META_FONT, Rgb565::CSS_DIM_GRAY);
+    let footer_style = MonoTextStyle::new(TITLE_FONT, Rgb565::CSS_DIM_GRAY);
 
     // Build the lines first so the block height is known and it can be
     // centred, rather than guessing a starting offset per state.
     let mut lines: Vec<(String, MonoTextStyle<Rgb565>)> = Vec::new();
-
-    match &host.state {
-        NetState::Waiting => {
-            lines.push(("waiting for network".into(), dim));
+    if host.addrs.is_empty() && host.hotspot.is_none() {
+        lines.push(("waiting for network".into(), dim));
+    } else {
+        for a in &host.addrs {
+            lines.push((format!("{}  {}", a.iface, a.addr), meta));
         }
-        NetState::Hotspot { ssid, addr } => {
-            // Here the address is not somewhere to connect to over an existing
-            // network, it is the second half of an instruction: join this
-            // network, then open this address.
+        if let Some(hs) = &host.hotspot {
+            // Instruction, not another LAN line: join this network, then
+            // open this address.
             lines.push(("Wi-Fi setup".into(), dim));
-            lines.push((ssid.clone(), meta));
-            lines.push((addr.clone(), meta));
-        }
-        NetState::Connected(addrs) => {
-            for a in addrs {
-                lines.push((format!("{}  {}", a.iface, a.addr), meta));
-            }
+            lines.push((hs.ssid.clone(), meta));
+            lines.push((hs.addr.clone(), meta));
         }
     }
 
     let title_h = TITLE_FONT.character_size.height as i32;
     let meta_h = META_FONT.character_size.height as i32;
-    let block = title_h + FIELD_GAP + lines.len() as i32 * (meta_h + LINE_GAP) - LINE_GAP;
+    let split = if !host.addrs.is_empty() && host.hotspot.is_some() {
+        FIELD_GAP
+    } else {
+        0
+    };
+    let hotspot_at = if split > 0 {
+        Some(host.addrs.len())
+    } else {
+        None
+    };
 
-    let mut y = ((region.size.height as i32 - block) / 2).max(0);
+    let block = title_h + FIELD_GAP + lines.len() as i32 * (meta_h + LINE_GAP) - LINE_GAP + split;
+    let reserved = if footer.is_some() {
+        title_h + FOOTER_MARGIN * 2
+    } else {
+        0
+    };
+    let mut y = ((region.size.height as i32 - reserved - block) / 2).max(0);
 
     // Infallible: RowBuf discards out-of-bounds pixels.
     let _ = Text::with_text_style(&host.hostname, Point::new(cx, y), title, centred).draw(&mut buf);
     y += title_h + FIELD_GAP;
 
-    for (text, style) in &lines {
+    for (i, (text, style)) in lines.iter().enumerate() {
+        if Some(i) == hotspot_at {
+            y += FIELD_GAP;
+        }
         let _ = Text::with_text_style(text, Point::new(cx, y), *style, centred).draw(&mut buf);
         y += meta_h + LINE_GAP;
+    }
+
+    if let Some(footer) = footer {
+        let fy = region.size.height as i32 - FOOTER_MARGIN - title_h;
+        let _ =
+            Text::with_text_style(footer, Point::new(cx, fy), footer_style, centred).draw(&mut buf);
     }
 
     target.fill_contiguous(&region, buf.px.iter().copied())

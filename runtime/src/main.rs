@@ -25,7 +25,7 @@ use art::{Art, ArtLoader};
 use config::Config;
 use display::Panel;
 use net::{HostInfo, NetMonitor};
-use state::{Command, CommandSink, PlayerState, StateSource};
+use state::{poll_system_status, Command, CommandSink, PlayerState, StateSource, SystemStatus};
 use ui::{Action, TextPane};
 
 /// How long the main loop waits for a touch before going round again.
@@ -34,6 +34,13 @@ use ui::{Action, TextPane};
 /// press wakes the loop immediately regardless, because touches arrive on a
 /// channel from a thread blocked on a GPIO edge event.
 const TICK: Duration = Duration::from_millis(40);
+/// How often to ask `/status` while still on the address screen.
+const STATUS_POLL: Duration = Duration::from_secs(1);
+/// Fall through to `getState` if `/status` never becomes `ready`.
+const STATUS_WAIT_CAP: Duration = Duration::from_secs(120);
+/// Spinner step on the `starting` footer.
+const SPIN_INTERVAL: Duration = Duration::from_millis(400);
+const SPIN: [char; 4] = ['|', '/', '-', '\\'];
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -88,50 +95,90 @@ fn run(cfg: Config) -> Result<()> {
     let mut current = PlayerState::default();
     let mut next_poll = Instant::now();
 
-    // Until the player answers for the first time, the panel shows host
-    // addresses. The renderer starts early and deliberately does not wait for
-    // volumio.service, so this covers most of the boot, and the address is
-    // the one thing someone needs before the player is reachable.
-    let mut ready = false;
+    // Until the backend is ready and getState succeeds once, the panel
+    // shows host addresses. The renderer starts early and deliberately
+    // does not wait for volumio.service: getState answers as soon as
+    // Express is up, which is well before plugins finish. /status is
+    // the gate; the address is the one thing someone needs before the
+    // player is reachable.
+    let mut player = false;
+    let mut backend_ready = false;
+    let wait_from = Instant::now();
+    let mut next_status = Instant::now();
+    let mut next_spin = Instant::now() + SPIN_INTERVAL;
+    let mut spin = 0usize;
+    let mut last_footer: Option<String> = None;
     let mut netmon = NetMonitor::default();
     let mut host = HostInfo::default();
 
     loop {
-        if !ready {
+        if !player {
             // Driven by wireless.js touching /tmp/networkstatus, not by a
             // timer over getifaddrs. See src/net.rs.
+            let mut dirty = false;
             if let Some(now) = netmon.poll() {
                 if now != host {
                     host = now;
-                    panel.render_status(&host)?;
+                    dirty = true;
                 }
+            }
+
+            if !backend_ready && Instant::now() >= next_status {
+                if poll_system_status(&cfg.status_url, net_timeout) == Some(SystemStatus::Ready) {
+                    tracing::info!("backend ready, waiting for player state");
+                    backend_ready = true;
+                    next_poll = Instant::now();
+                }
+                next_status = Instant::now() + STATUS_POLL;
+                if !backend_ready && wait_from.elapsed() >= STATUS_WAIT_CAP {
+                    tracing::warn!(
+                        secs = STATUS_WAIT_CAP.as_secs(),
+                        "backend still not ready, falling through to getState"
+                    );
+                    backend_ready = true;
+                    next_poll = Instant::now();
+                }
+            }
+
+            let want_spin = host.has_address() && !backend_ready;
+            let spin_due = want_spin && Instant::now() >= next_spin;
+            if spin_due {
+                spin = (spin + 1) % SPIN.len();
+                next_spin = Instant::now() + SPIN_INTERVAL;
+            }
+            let footer = want_spin.then(|| format!("starting {}", SPIN[spin]));
+            if dirty || spin_due || footer != last_footer {
+                panel.render_status(&host, footer.as_deref())?;
+                last_footer = footer;
             }
         }
 
         if Instant::now() >= next_poll {
-            match source.poll() {
-                Ok(s) => {
-                    // First success: leave the status screen. `shown` is
-                    // cleared so the next pass draws the player in full,
-                    // since none of it is on screen yet.
-                    if !ready {
-                        tracing::info!("player available, switching from status screen");
-                        ready = true;
-                        shown = None;
+            if backend_ready {
+                match source.poll() {
+                    Ok(s) => {
+                        // First success: leave the status screen. `shown` is
+                        // cleared so the next pass draws the player in full,
+                        // since none of it is on screen yet.
+                        if !player {
+                            tracing::info!("player available, switching from status screen");
+                            player = true;
+                            shown = None;
+                        }
+                        current = s;
                     }
-                    current = s;
+                    // A failed poll keeps whatever is on screen. Once the
+                    // player has been seen once the status screen is never
+                    // shown again: a failure during a Volumio restart is
+                    // transient, and reverting to an address list mid-
+                    // listening would be worse than a slightly stale player.
+                    Err(e) => tracing::warn!(error = %e, "state poll failed"),
                 }
-                // A failed poll keeps whatever is on screen. Once the player
-                // has been seen once the status screen is never shown again:
-                // a failure during a Volumio restart is transient, and
-                // reverting to an address list mid-listening would be worse
-                // than a slightly stale player.
-                Err(e) => tracing::warn!(error = %e, "state poll failed"),
             }
             next_poll = Instant::now() + poll_interval;
         }
 
-        if !ready {
+        if !player {
             // Drain touches so the channel cannot fill, and use the same
             // blocking wait as the player path so the loop is not spinning.
             if let Ok(action) = rx.recv_timeout(TICK) {

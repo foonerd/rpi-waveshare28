@@ -53,37 +53,33 @@ pub struct Address {
     pub addr: String,
 }
 
-/// What the status screen should show.
+/// Access point being broadcast. An instruction, not a LAN address.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NetState {
-    /// No usable address yet. The board is alive and looking.
-    Waiting,
-    /// Access point mode: join this network, then open this address.
-    Hotspot {
-        /// SSID being broadcast.
-        ssid: String,
-        /// The access point's own address.
-        addr: String,
-    },
-    /// Connected, with one or more usable addresses.
-    Connected(Vec<Address>),
+pub struct Hotspot {
+    /// SSID being broadcast.
+    pub ssid: String,
+    /// The access point's own address.
+    pub addr: String,
 }
 
 /// Hostname and network state, as displayed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// LAN addresses and the hotspot are independent. They coexist on a typical
+/// first boot: ethernet has an address, `wireless.js` has also raised the AP.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostInfo {
     /// Hostname with the mDNS suffix, because that is what people type.
     pub hostname: String,
-    /// Current network state.
-    pub state: NetState,
+    /// Usable LAN addresses, wired first.
+    pub addrs: Vec<Address>,
+    /// Present when the wireless daemon is in access point mode.
+    pub hotspot: Option<Hotspot>,
 }
 
-impl Default for HostInfo {
-    fn default() -> Self {
-        Self {
-            hostname: String::new(),
-            state: NetState::Waiting,
-        }
+impl HostInfo {
+    /// True when there is something a person can type or join.
+    pub fn has_address(&self) -> bool {
+        !self.addrs.is_empty() || self.hotspot.is_some()
     }
 }
 
@@ -140,7 +136,15 @@ fn modified(path: &str) -> Option<SystemTime> {
 fn read() -> HostInfo {
     HostInfo {
         hostname: hostname(),
-        state: state(),
+        addrs: addresses(),
+        hotspot: if in_hotspot_mode() {
+            Some(Hotspot {
+                ssid: hotspot_ssid(),
+                addr: HOTSPOT_ADDR.to_string(),
+            })
+        } else {
+            None
+        },
     }
 }
 
@@ -158,28 +162,6 @@ fn hostname() -> String {
     } else {
         format!("{name}.local")
     }
-}
-
-fn state() -> NetState {
-    let addrs = addresses();
-
-    // Real addresses win over hotspot mode. The two coexist routinely: the
-    // wireless daemon falls back to an access point when it cannot join a
-    // network, while ethernet stays up with a perfectly good address.
-    // Volumio's own network_monitor.sh treats the hotspot address as "not
-    // connected" but still reports ethernet, and this follows that.
-    if !addrs.is_empty() {
-        return NetState::Connected(addrs);
-    }
-
-    if in_hotspot_mode() {
-        return NetState::Hotspot {
-            ssid: hotspot_ssid(),
-            addr: HOTSPOT_ADDR.to_string(),
-        };
-    }
-
-    NetState::Waiting
 }
 
 /// True when `wireless.js` reports access point mode.
@@ -218,7 +200,7 @@ fn hotspot_ssid() -> String {
 /// The access point's own address is excluded: `192.168.211.1` is not
 /// somewhere to connect to over an existing network, and showing it in a list
 /// alongside real addresses would be misleading. It is surfaced through
-/// `NetState::Hotspot` instead, with the SSID that makes it actionable.
+/// [`Hotspot`] instead, with the SSID that makes it actionable.
 fn addresses() -> Vec<Address> {
     let Ok(ifaces) = if_addrs::get_if_addrs() else {
         return Vec::new();
@@ -338,6 +320,43 @@ mod tests {
         assert!(!usable(&v6("::")));
         assert!(!usable(&v6("fe80::1")), "link-local needs a scope id");
         assert!(!usable(&v6("ff02::1")));
+    }
+
+    #[test]
+    fn has_address_only_when_there_is_somewhere_to_go() {
+        let waiting = HostInfo {
+            hostname: "volumio.local".into(),
+            addrs: Vec::new(),
+            hotspot: None,
+        };
+        assert!(!waiting.has_address());
+
+        let hotspot = HostInfo {
+            hostname: "volumio.local".into(),
+            addrs: Vec::new(),
+            hotspot: Some(Hotspot {
+                ssid: "Volumio".into(),
+                addr: HOTSPOT_ADDR.into(),
+            }),
+        };
+        assert!(hotspot.has_address());
+
+        let connected = HostInfo {
+            hostname: "volumio.local".into(),
+            addrs: vec![Address {
+                iface: "eth0".into(),
+                addr: "192.168.1.2".into(),
+            }],
+            hotspot: None,
+        };
+        assert!(connected.has_address());
+
+        let both = HostInfo {
+            hostname: "volumio.local".into(),
+            addrs: connected.addrs.clone(),
+            hotspot: hotspot.hotspot.clone(),
+        };
+        assert!(both.has_address());
     }
 
     #[test]

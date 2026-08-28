@@ -87,6 +87,8 @@ pub struct Config {
 
     /// Volumio state endpoint.
     pub state_url: String,
+    /// Volumio system status, plain text `starting` or `ready`.
+    pub status_url: String,
     /// Volumio command endpoint base. The `cmd` query is appended.
     pub command_url: String,
     /// Origin the relative `albumart` path from the state API is joined to.
@@ -120,6 +122,7 @@ impl Default for Config {
             rotation: 0,
 
             state_url: "http://localhost:3000/api/v1/getState".into(),
+            status_url: "http://localhost:3000/status".into(),
             command_url: "http://localhost:3000/api/v1/commands/".into(),
             art_base: "http://localhost:3000".into(),
             poll_interval_ms: 500,
@@ -193,6 +196,7 @@ mod tests {
         let cfg = Config::load(Path::new("/nonexistent/waveshare28-panel.toml")).unwrap();
         assert_eq!(cfg.rotation, 0);
         assert_eq!(cfg.backend, Backend::Spi);
+        assert_eq!(cfg.status_url, "http://localhost:3000/status");
         assert_eq!(cfg.spi_dev, "/dev/spidev0.0");
         assert_eq!(cfg.fb_dev, "/dev/fb1");
     }

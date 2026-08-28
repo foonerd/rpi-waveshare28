@@ -150,8 +150,8 @@ impl Panel {
     }
 
     /// Draw the status screen shown before the player is available.
-    pub fn render_status(&mut self, host: &HostInfo) -> Result<()> {
-        on_surface!(self, |s| ui::draw_status(s, &self.layout, host))
+    pub fn render_status(&mut self, host: &HostInfo, footer: Option<&str>) -> Result<()> {
+        on_surface!(self, |s| ui::draw_status(s, &self.layout, host, footer))
     }
 
     /// The size of the art box, so the loader knows what to scale to.
