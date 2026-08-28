@@ -219,10 +219,9 @@ install_runtime() {
 check_conflict() {
     if grep -qE '^dtoverlay=(fbtft|mipi-dbi-spi)' "$USERCONFIG" 2>/dev/null; then
         warn "a display overlay is configured on spi0 cs0 in ${USERCONFIG}."
-        warn "An overlay applied by the firmware is merged into the device tree"
-        warn "before the kernel starts and cannot be removed at runtime, so the"
-        warn "renderer could never open /dev/spidev0.0. The configurator will"
-        warn "remove those lines."
+        warn "backend=spi cannot open /dev/spidev0.0 while that overlay is"
+        warn "firmware-applied. Use 'waveshare28-config set backend=framebuffer'"
+        warn "to keep it and draw into /dev/fb1 after Plymouth."
     fi
 }
 
