@@ -214,32 +214,30 @@ which is what the discarded implementation did.
 
 ## Hotspot
 
-The access point is shown only when there is no other usable address.
+LAN addresses and the access point are independent facts. They coexist on a
+typical first boot: ethernet has an address, `wireless.js` has also raised
+the AP. Someone already on the LAN needs the IP; someone with a phone needs
+the SSID. Hiding either is wrong.
 
-Hotspot fallback and a working ethernet coexist routinely: the wireless daemon
-brings up an access point when it cannot join a network, while ethernet
-carries on with a perfectly good address. Volumio's own `network_monitor.sh`
-treats the hotspot address as "not connected" but still reports ethernet
-separately, and this follows that.
-
-An earlier implementation checked hotspot mode first and returned before
-looking at addresses, which hid the LAN address on exactly that arrangement.
+`192.168.211.1` is still excluded from the address list itself. Listing it
+beside real addresses would make it look like another LAN IP. It is shown
+as its own block, an instruction: join this network, then open this address.
 
 Detection is `/data/wlan0status` containing `hotspot`, with the presence of
 `192.168.211.1` as a fallback for the case where the file has not been
-written. `192.168.211.1` is excluded from the address list itself, since
-listing it beside real addresses would be misleading.
+written.
 
-When in hotspot mode the screen shows:
+When both are up the screen shows:
 
     <hostname>
+    <iface>  <addr>
+
     Wi-Fi setup
     <SSID>
     192.168.211.1
 
-rather than the address list, because in that state the address is not
-something to connect to over an existing network, it is an instruction: join
-this network, then open this address.
+When only the AP is up, the address list is omitted and the hotspot block
+sits under the hostname.
 
 SSID from `ssid=` in `/etc/hostapd/hostapd.conf`, falling back to `Volumio` if
 the file is unreadable.
@@ -248,11 +246,21 @@ the file is unreadable.
 
 ## Readiness and the transition
 
-The renderer polls `getState` at the configured interval from the moment it
-starts. It does not wait for `volumio.service`.
+The renderer does not wait for `volumio.service`. It comes up early and
+shows the address screen.
 
-- Before the first successful poll: status screen
-- On the first success: full player draw, and address polling stops
+`getState` answers as soon as Express is listening, which is well before
+plugins finish. The signal that boot is actually complete is `GET /status`,
+which stays `starting` until plugins finish plus seven seconds
+(`BOOT COMPLETED`).
+
+- Poll `/status` about once a second until the body is `ready`, or until
+  120 seconds have elapsed
+- Do not call `getState` during that wait
+- If an address or hotspot is already on screen, a dim `starting` footer
+  is pinned near the bottom in the title font, with a one-character spinner
+- On `ready` or timeout: the first successful `getState` switches to the
+  player, and address polling stops
 - After that: the player screen stays, even if polls start failing
 
 The asymmetry is deliberate. A failing poll during a Volumio restart is
@@ -304,39 +312,6 @@ the panel forces per-pixel addressing and flickers.
 
 Touch is already mapped back through rotation in `Layout::map`. The status
 screen has no touch targets, so nothing further is needed.
-
----
-
-## Honest answers to the quality questions
-
-**Engineering excellence?** In two places. The start-then-enable sequence with
-a `systemd-analyze verify` gate is a real improvement over the usual practice
-of enabling and hoping. Using the standard library's address classification
-rather than hand-written prefix checks is the correct instinct. The rest is
-competent, not exceptional.
-
-**Versatile and robust?** The address model handles dual stack, multiple
-interfaces, hotspot fallback and the no-address case without special-casing.
-The failure model bounds every external call and every restart.
-
-**Enterprise grade?** The parts that matter for that are the bounded failure,
-the refusal to persist an unverified unit, and a documented recovery path.
-Those are present.
-
-**Outside the box?** One idea: never make a unit persistent until it has been
-observed to start. That is not novel in principle but it is rarely done, and
-it directly addresses the failure mode that cost a reflash tonight.
-
-**Next generation, never done before?** No. This is careful application of
-known practice. Claiming otherwise would be dishonest; a status screen and a
-systemd unit are not new ground. What is unusual is the constraint set: one
-SPI chip select shared with a boot splash that cannot share it, on a board
-where a bad unit costs a reflash.
-
-**Facts not guesswork?** Mostly. The table above separates what is measured
-from what is assumed, and there is exactly one open assumption, flagged.
-Everything about overlay lifetime, Plymouth binding, udev permissions and API
-timing was measured on the device tonight rather than reasoned about.
 
 ---
 

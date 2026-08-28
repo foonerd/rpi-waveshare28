@@ -69,8 +69,8 @@ to need reflashing; see `DEFECTS.md`.
 ## What the panel shows
 
 Before Volumio's node process answers, the hostname and the host's addresses,
-updating as they are assigned, or the hotspot SSID if there is no other
-address. After the first successful poll, the player.
+updating as they are assigned, and the hotspot SSID if the AP is up. After
+`/status` is `ready` and the first `getState` succeeds, the player.
 
 The renderer starts early and does not wait for `volumio.service`. Without
 that the panel is dark for most of a minute, and the address is the one thing

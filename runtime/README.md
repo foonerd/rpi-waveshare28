@@ -39,15 +39,16 @@ Two screens.
 
 Before Volumio's node process answers, the panel shows the hostname and the
 host's addresses, updating as they are assigned. If the wireless daemon has
-fallen back to an access point and there is no other address, it shows the
-SSID and `192.168.211.1` instead, which is an instruction rather than an
-address list: join this network, then open this address.
+raised an access point, the SSID and `192.168.211.1` are shown as well, as
+an instruction rather than another LAN line: join this network, then open
+this address. Both stay on screen when they coexist.
 
 This exists because the renderer starts early and deliberately does not wait
 for `volumio.service`. Without it the panel is dark for most of a minute, and
 the address is the one thing someone needs before the player is reachable.
 
-After the first successful state poll it shows the player: album art, wrapped
+After `/status` is `ready` and the first `getState` succeeds, it shows the
+player: album art, wrapped
 title, artist and album, a volume slider, a progress bar and a transport
 strip. It never returns to the status screen. A failed poll during a Volumio
 restart is transient, and reverting to an address list mid-listening would be
