@@ -4,7 +4,7 @@
 #
 # Usage:
 #   waveshare28-config show
-#   waveshare28-config set rotation=90 [speed=32000000]
+#   waveshare28-config set rotation=270 backend=framebuffer
 #   waveshare28-config apply
 #   waveshare28-config verify
 #   waveshare28-config recover
@@ -21,28 +21,33 @@
 # the module with it, so the installer has to be re-run. The durable file
 # surviving means that re-run restores your settings rather than asking again.
 #
-# ## Why there is no boot splash on the panel
+# ## Two backends
 #
-# One SPI chip select, two possible owners. Plymouth needs a framebuffer, so
-# the fbtft driver; the renderer needs /dev/spidev0.0, which fbtft's overlay
-# disables. The SPI core refuses a second device on a claimed chip select, so
-# they cannot coexist.
+# One SPI chip select, one owner. Plymouth needs a framebuffer in the
+# initramfs, so fbtft must be in userconfig.txt (firmware-applied, not
+# removable). The renderer then cannot open /dev/spidev0.0.
 #
-# An overlay could be applied at runtime, which makes it removable, but
-# plymouthd binds its framebuffer when it starts in the initramfs and does not
-# adopt one that appears later. Measured: plymouth-start at 20:56:36, fb1 at
-# 20:56:37, nothing drawn until quit at 20:57:13.
+# backend=framebuffer keeps those fbtft lines and draws into /dev/fb1 after
+# plymouth-quit. backend=spi is the original path: it removes the fbtft lines
+# so the process can own the bus itself. The two cannot be mixed.
 #
-# So a splash on this panel needs the overlay applied from inside the
-# initramfs, which is a change to volumio-os, not something an installer can
-# do. Instead the renderer starts early and shows host addresses until the
-# player answers, which is more use than a logo anyway.
+# fbtft rotate is counter-clockwise. This file's rotation is clockwise. The
+# same physical orientation is a different number in each: rotation=270 is
+# dtparam=rotate=90.
+#
+# cmdline.txt is owned for two tokens only, and only on backend=framebuffer:
+# fbcon=map:1 (tty1 on /dev/fb1) and fbcon=font:VGA8x16 (square QR modules).
+# backend=spi removes them. A kernel OTA replaces cmdline.txt; verify
+# reports that, apply puts the tokens back.
 
 set -euo pipefail
 
 CONF="/boot/waveshare28.conf"
 USERCONFIG="/boot/userconfig.txt"
+CMDLINE="/boot/cmdline.txt"
 TOML="/etc/waveshare28-panel.toml"
+FBCON_MAP="fbcon=map:1"
+FBCON_FONT="fbcon=font:VGA8x16"
 UNIT_DIR="/etc/systemd/system"
 BIN_DIR="/usr/local/bin"
 UNIT="waveshare28-panel.service"
@@ -50,6 +55,7 @@ UNIT="waveshare28-panel.service"
 # Defaults, used when the durable file is absent or partial.
 rotation=0
 speed=32000000
+backend=spi
 
 log()  { printf '[waveshare28] %s\n' "$*"; }
 warn() { printf '[waveshare28] WARNING: %s\n' "$*" >&2; }
@@ -66,6 +72,31 @@ validate_rotation() {
     esac
 }
 
+validate_backend() {
+    case "$1" in
+        spi|framebuffer) ;;
+        *) die "backend must be spi or framebuffer, got '$1'" ;;
+    esac
+}
+
+# Clockwise (this file) to counter-clockwise (fbtft rotate=).
+fbtft_rotate() {
+    case "$1" in
+        90)  printf '270' ;;
+        270) printf '90' ;;
+        *)   printf '%s' "$1" ;;
+    esac
+}
+
+# Device the current backend must open. Absent until the next boot when
+# apply has just written or removed a firmware overlay.
+backend_device() {
+    case "$backend" in
+        framebuffer) printf '/dev/fb1' ;;
+        spi)         printf '/dev/spidev0.0' ;;
+    esac
+}
+
 load_conf() {
     [[ -f "$CONF" ]] || return 0
 
@@ -79,7 +110,8 @@ load_conf() {
         case "$key" in
             rotation) rotation="$value" ;;
             speed)    speed="$value" ;;
-            splash)   warn "'splash' is obsolete and ignored; see the header of this script" ;;
+            backend)  backend="$value" ;;
+            splash)   warn "'splash' is obsolete; use backend=framebuffer" ;;
             *)        warn "ignoring unknown key in ${CONF}: ${key}" ;;
         esac
     done < "$CONF"
@@ -95,10 +127,15 @@ save_conf() {
 # 'waveshare28-config apply' to regenerate them.
 
 # Panel rotation in degrees clockwise: 0, 90, 180 or 270.
+# fbtft rotate is counter-clockwise. rotation=270 is dtparam=rotate=90.
 rotation=${rotation}
 
-# SPI clock in Hz.
+# SPI clock in Hz. Also the fbtft speed= when backend=framebuffer.
 speed=${speed}
+
+# spi: renderer owns the bus. framebuffer: fbtft stays for Plymouth, renderer
+# draws into /dev/fb1 after plymouth-quit.
+backend=${backend}
 EOF
     log "wrote ${CONF}"
 }
@@ -125,9 +162,53 @@ remove_lines() {
     sed -i -E "/${pattern}/d" "$USERCONFIG"
 }
 
+# cmdline.txt is a single line. Touch only fbcon=* words; everything else
+# is Volumio's. An empty write would be a brick, so that is refused.
+read_cmdline() {
+    [[ -f "$CMDLINE" ]] || die "${CMDLINE} not found; is this a Volumio Pi image?"
+    local line
+    IFS= read -r line < "$CMDLINE" || true
+    printf '%s' "$line"
+}
+
+write_cmdline() {
+    local line="$1"
+    line="$(printf '%s' "$line" | tr -s ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -n "$line" ]] || die "refusing to write an empty ${CMDLINE}"
+    printf '%s\n' "$line" > "$CMDLINE"
+    log "wrote ${CMDLINE}"
+}
+
+strip_fbcon() {
+    local word out=""
+    for word in $1; do
+        case "$word" in
+            fbcon=*) ;;
+            *) out="${out:+$out }$word" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+# backend=framebuffer: tty1 on fb1, 8x16 cells so the /etc/issue QR is square.
+# backend=spi: no fb1, so map:1 would point at nothing; strip both tokens.
+apply_fbcon() {
+    local line
+    line="$(strip_fbcon "$(read_cmdline)")"
+    if [[ "$backend" == framebuffer ]]; then
+        line="${line} ${FBCON_MAP} ${FBCON_FONT}"
+        log "cmdline.txt: ${FBCON_MAP} ${FBCON_FONT}"
+    else
+        log "cmdline.txt: removed fbcon= (backend=spi)"
+    fi
+    write_cmdline "$line"
+}
+
 write_toml() {
     cat > "$TOML" <<EOF
 # Generated by waveshare28-config from ${CONF}. Edits here are overwritten.
+backend = "${backend}"
+fb_dev = "/dev/fb1"
 rotation = ${rotation}
 spi_speed_hz = ${speed}
 EOF
@@ -157,7 +238,7 @@ Documentation=https://github.com/foonerd/rpi-waveshare28
 # Not ordered after volumio.service. The renderer shows host addresses until
 # the player answers, so waiting would leave the panel dark for the whole boot
 # to no purpose.
-After=local-fs.target
+After=local-fs.target plymouth-quit.service
 # Rate limiting lives in [Unit], not [Service]: it moved there in systemd 229
 # and only the older StartLimitInterval was ever a [Service] key.
 StartLimitIntervalSec=120
@@ -174,11 +255,12 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=waveshare28-panel
-# Opens /dev/spidev0.0, /dev/i2c-1 and /dev/gpiochip0. Volumio already puts
-# the volumio user in the spi, i2c and gpio groups.
+# SPI backend: /dev/spidev0.0, i2c, gpio. Framebuffer backend: /dev/fb1
+# (video group) plus i2c and gpio for touch. Volumio already puts the
+# volumio user in spi, i2c and gpio; video is added here for /dev/fb1.
 User=volumio
 Group=volumio
-SupplementaryGroups=spi i2c gpio
+SupplementaryGroups=spi i2c gpio video
 
 [Install]
 WantedBy=multi-user.target
@@ -186,13 +268,16 @@ EOF
     log "wrote ${UNIT_DIR}/${UNIT}"
 }
 
-# Never make a unit persistent until it has been observed to start.
+# Enable the unit. Start it now only if the backend device already exists.
 #
-# This is the measure that would have prevented a bricked device. Writing a
-# unit and enabling it means the first evidence of a mistake arrives on the
-# next boot, which is exactly when you may no longer have a shell. Verifying,
-# starting, and confirming it is running first means a bad unit fails while
-# you are still looking at it.
+# A firmware overlay written (or removed) in userconfig.txt is not visible
+# until the next boot. Starting then would fail, Restart=on-failure would
+# loop, and the old "start before enable" gate would refuse to persist a
+# unit that is correct for the next boot. That is the case we just hit.
+#
+# If the device is present, keep the original rule: observe it running
+# before enable, so a bad unit still fails while there is a shell.
+# If it is not, stop any current instance, enable, and ask for a reboot.
 enable_safely() {
     systemctl daemon-reload
 
@@ -204,6 +289,17 @@ enable_safely() {
     if [[ -s /tmp/waveshare28-verify.log ]]; then
         cat /tmp/waveshare28-verify.log >&2
         die "systemd-analyze verify reported problems; unit not enabled"
+    fi
+
+    local dev
+    dev="$(backend_device)"
+
+    if [[ ! -e "$dev" ]]; then
+        log "${dev} is not present; backend=${backend} applies on the next boot"
+        systemctl stop "$UNIT" >/dev/null 2>&1 || true
+        systemctl enable "$UNIT" >/dev/null
+        log "unit enabled. Reboot for ${dev} to appear, then the panel starts."
+        return 0
     fi
 
     log "starting before enabling"
@@ -227,25 +323,43 @@ cmd_apply() {
     # Validate before writing anything, so a bad value cannot leave the system
     # half configured.
     validate_rotation "$rotation"
+    validate_backend "$backend"
     if ! [[ "$speed" =~ ^[0-9]+$ ]] || [[ "$speed" -le 0 ]]; then
         die "speed must be a positive number, got '${speed}'"
     fi
 
-    # A display overlay applied by the firmware is merged into the device tree
-    # before the kernel starts and cannot be removed at runtime, so the
-    # renderer could never open /dev/spidev0.0.
+    # Rewrite the display overlay set rather than appending. A leftover
+    # rotate= or speed= from a previous apply would otherwise sit next to
+    # the new one, and the firmware uses the first match.
     remove_lines '^dtoverlay=(fbtft|mipi-dbi-spi)'
     remove_lines '^dtparam=(width|height|reset_pin|dc_pin|led_pin|rotate)='
 
     ensure_line "dtparam=spi=on"
     ensure_line "dtoverlay=cst328"
 
+    if [[ "$backend" == framebuffer ]]; then
+        local ccw
+        ccw="$(fbtft_rotate "$rotation")"
+        ensure_line "dtoverlay=fbtft,spi0-0,st7789v"
+        ensure_line "dtparam=width=240,height=320"
+        ensure_line "dtparam=reset_pin=27,dc_pin=25"
+        ensure_line "dtparam=led_pin=18,speed=${speed}"
+        ensure_line "dtparam=rotate=${ccw}"
+    fi
+
+    apply_fbcon
+
     write_toml
     write_unit
     enable_safely
 
     log "applied."
-    log "SPI settings in userconfig.txt take effect on the next boot."
+    if [[ "$backend" == framebuffer ]]; then
+        log "rotation=${rotation} clockwise is dtparam=rotate=$(fbtft_rotate "$rotation")."
+    fi
+    if [[ ! -e "$(backend_device)" ]]; then
+        log "reboot required: $(backend_device) is not on this boot."
+    fi
 }
 
 cmd_set() {
@@ -259,11 +373,13 @@ cmd_set() {
         case "$key" in
             rotation) rotation="$value" ;;
             speed)    speed="$value" ;;
+            backend)  backend="$value" ;;
             *)        die "unknown setting: ${key}" ;;
         esac
     done
 
     validate_rotation "$rotation"
+    validate_backend "$backend"
     save_conf
     cmd_apply
 }
@@ -272,6 +388,11 @@ cmd_show() {
     load_conf
     printf 'rotation = %s degrees clockwise\n' "$rotation"
     printf 'speed    = %s Hz\n' "$speed"
+    printf 'backend  = %s\n' "$backend"
+    if [[ "$backend" == framebuffer ]]; then
+        printf 'fbtft    = rotate=%s (counter-clockwise)\n' "$(fbtft_rotate "$rotation")"
+        printf 'fbcon    = %s %s\n' "$FBCON_MAP" "$FBCON_FONT"
+    fi
     printf 'source   = %s\n' "$([[ -f $CONF ]] && echo "$CONF" || echo 'defaults')"
 }
 
@@ -296,9 +417,31 @@ cmd_verify() {
         "$(grep -qxF 'dtparam=spi=on' "$USERCONFIG" 2>/dev/null && echo y)"
     check "userconfig.txt has dtoverlay=cst328" \
         "$(grep -qxF 'dtoverlay=cst328' "$USERCONFIG" 2>/dev/null && echo y)"
-    check "userconfig.txt has no firmware-applied display overlay" \
-        "$(grep -qE '^dtoverlay=(fbtft|mipi-dbi-spi)' "$USERCONFIG" 2>/dev/null || echo y)"
+    if [[ "$backend" == framebuffer ]]; then
+        local ccw
+        ccw="$(fbtft_rotate "$rotation")"
+        check "userconfig.txt has dtoverlay=fbtft,spi0-0,st7789v" \
+            "$(grep -qxF 'dtoverlay=fbtft,spi0-0,st7789v' "$USERCONFIG" 2>/dev/null && echo y)"
+        check "userconfig.txt has dtparam=rotate=${ccw}" \
+            "$(grep -qxF "dtparam=rotate=${ccw}" "$USERCONFIG" 2>/dev/null && echo y)"
+    else
+        check "userconfig.txt has no firmware-applied display overlay" \
+            "$(grep -qE '^dtoverlay=(fbtft|mipi-dbi-spi)' "$USERCONFIG" 2>/dev/null || echo y)"
+    fi
+    if [[ -f "$CMDLINE" ]]; then
+        if [[ "$backend" == framebuffer ]]; then
+            check "cmdline.txt has ${FBCON_MAP}" \
+                "$(grep -qwF "$FBCON_MAP" "$CMDLINE" 2>/dev/null && echo y)"
+            check "cmdline.txt has ${FBCON_FONT}" \
+                "$(grep -qwF "$FBCON_FONT" "$CMDLINE" 2>/dev/null && echo y)"
+        else
+            check "cmdline.txt has no fbcon=" \
+                "$(grep -qE '(^|[[:space:]])fbcon=' "$CMDLINE" 2>/dev/null || echo y)"
+        fi
+    fi
     check "${TOML} exists" "$([[ -f $TOML ]] && echo y)"
+    check "${TOML} matches backend" \
+        "$(grep -qxF "backend = \"${backend}\"" "$TOML" 2>/dev/null && echo y)"
     check "${TOML} matches rotation" \
         "$(grep -qxF "rotation = ${rotation}" "$TOML" 2>/dev/null && echo y)"
     check "unit installed" "$([[ -f ${UNIT_DIR}/${UNIT} ]] && echo y)"
