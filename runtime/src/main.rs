@@ -41,6 +41,8 @@ const STATUS_WAIT_CAP: Duration = Duration::from_secs(120);
 /// Spinner step on the `starting` footer.
 const SPIN_INTERVAL: Duration = Duration::from_millis(400);
 const SPIN: [char; 4] = ['|', '/', '-', '\\'];
+/// How long the address overlay stays up after a cover tap.
+const INFO_HOLD: Duration = Duration::from_secs(10);
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -110,6 +112,7 @@ fn run(cfg: Config) -> Result<()> {
     let mut last_footer: Option<String> = None;
     let mut netmon = NetMonitor::default();
     let mut host = HostInfo::default();
+    let mut info_until: Option<Instant> = None;
 
     loop {
         if !player {
@@ -187,6 +190,36 @@ fn run(cfg: Config) -> Result<()> {
             continue;
         }
 
+        // Keep host current after the player is up. The overlay reads this
+        // on tap, and redraws if the address changes while it is showing.
+        if let Some(now) = netmon.poll() {
+            if now != host {
+                host = now;
+                if info_until.is_some() {
+                    panel.render_status(&host, None)?;
+                }
+            }
+        }
+
+        if info_until.is_some_and(|until| Instant::now() >= until) {
+            info_until = None;
+            shown = None;
+        }
+
+        if info_until.is_some() {
+            match rx.recv_timeout(TICK) {
+                Ok(_) => {
+                    info_until = None;
+                    shown = None;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("touch thread stopped");
+                }
+            }
+            continue;
+        }
+
         pane.set(
             current.title.as_deref().unwrap_or(""),
             current.artist.as_deref().unwrap_or(""),
@@ -236,6 +269,11 @@ fn run(cfg: Config) -> Result<()> {
         // than sleeping means a press is acted on as soon as the touch thread
         // reports it, instead of after whatever the loop was going to do next.
         match rx.recv_timeout(TICK) {
+            Ok(Action::Art) => {
+                host = netmon.refresh();
+                panel.render_status(&host, None)?;
+                info_until = Some(Instant::now() + INFO_HOLD);
+            }
             Ok(action) => {
                 if let Some(cmd) = command_for(action) {
                     if let Err(e) = commands.send(cmd) {

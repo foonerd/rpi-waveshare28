@@ -144,7 +144,7 @@ pub enum Action {
     Next,
     /// Set volume to a percentage.
     Volume(u8),
-    /// Tap on the art area, currently unassigned.
+    /// Tap on the art area: show host addresses.
     Art,
 }
 
@@ -481,30 +481,29 @@ where
     let cx = region.size.width as i32 / 2;
 
     let title = MonoTextStyle::new(TITLE_FONT, Rgb565::WHITE);
-    let meta = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
-    let dim = MonoTextStyle::new(META_FONT, Rgb565::CSS_DIM_GRAY);
-    let footer_style = MonoTextStyle::new(TITLE_FONT, Rgb565::CSS_DIM_GRAY);
+    let section = MonoTextStyle::new(TITLE_FONT, Rgb565::CSS_LIGHT_GRAY);
+    let fact = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
+    let status = MonoTextStyle::new(TITLE_FONT, Rgb565::CSS_DIM_GRAY);
 
     // Build the lines first so the block height is known and it can be
     // centred, rather than guessing a starting offset per state.
     let mut lines: Vec<(String, MonoTextStyle<Rgb565>)> = Vec::new();
     if host.addrs.is_empty() && host.hotspot.is_none() {
-        lines.push(("waiting for network".into(), dim));
+        lines.push(("waiting for network".into(), status));
     } else {
         for a in &host.addrs {
-            lines.push((format!("{}  {}", a.iface, a.addr), meta));
+            lines.push((format!("{}  {}", a.link.label(), a.addr), fact));
         }
         if let Some(hs) = &host.hotspot {
             // Instruction, not another LAN line: join this network, then
             // open this address.
-            lines.push(("Wi-Fi setup".into(), dim));
-            lines.push((hs.ssid.clone(), meta));
-            lines.push((hs.addr.clone(), meta));
+            lines.push(("Wi-Fi setup".into(), section));
+            lines.push((hs.ssid.clone(), fact));
+            lines.push((hs.addr.clone(), fact));
         }
     }
 
     let title_h = TITLE_FONT.character_size.height as i32;
-    let meta_h = META_FONT.character_size.height as i32;
     let split = if !host.addrs.is_empty() && host.hotspot.is_some() {
         FIELD_GAP
     } else {
@@ -516,7 +515,17 @@ where
         None
     };
 
-    let block = title_h + FIELD_GAP + lines.len() as i32 * (meta_h + LINE_GAP) - LINE_GAP + split;
+    let mut body_h = 0;
+    for (i, (_, style)) in lines.iter().enumerate() {
+        if i > 0 {
+            body_h += LINE_GAP;
+        }
+        if Some(i) == hotspot_at {
+            body_h += FIELD_GAP;
+        }
+        body_h += style.font.character_size.height as i32;
+    }
+    let block = title_h + FIELD_GAP + body_h;
     let reserved = if footer.is_some() {
         title_h + FOOTER_MARGIN * 2
     } else {
@@ -533,13 +542,12 @@ where
             y += FIELD_GAP;
         }
         let _ = Text::with_text_style(text, Point::new(cx, y), *style, centred).draw(&mut buf);
-        y += meta_h + LINE_GAP;
+        y += style.font.character_size.height as i32 + LINE_GAP;
     }
 
     if let Some(footer) = footer {
         let fy = region.size.height as i32 - FOOTER_MARGIN - title_h;
-        let _ =
-            Text::with_text_style(footer, Point::new(cx, fy), footer_style, centred).draw(&mut buf);
+        let _ = Text::with_text_style(footer, Point::new(cx, fy), status, centred).draw(&mut buf);
     }
 
     target.fill_contiguous(&region, buf.px.iter().copied())
@@ -584,24 +592,58 @@ where
 {
     let box_ = layout.art;
 
-    let Some(art) = art else {
-        return box_
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-            .draw(target);
-    };
+    if let Some(art) = art {
+        let w = art.w.min(box_.size.width);
+        let h = art.h.min(box_.size.height);
+        let x = box_.top_left.x + (box_.size.width as i32 - w as i32) / 2;
+        let y = box_.top_left.y + (box_.size.height as i32 - h as i32) / 2;
+        let placed = Rectangle::new(Point::new(x, y), Size::new(w, h));
 
-    let w = art.w.min(box_.size.width);
-    let h = art.h.min(box_.size.height);
-    let x = box_.top_left.x + (box_.size.width as i32 - w as i32) / 2;
-    let y = box_.top_left.y + (box_.size.height as i32 - h as i32) / 2;
-    let placed = Rectangle::new(Point::new(x, y), Size::new(w, h));
+        if placed != box_ {
+            box_.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+                .draw(target)?;
+        }
 
-    if placed != box_ {
+        target.fill_contiguous(&placed, art.px.iter().copied())?;
+    } else {
         box_.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
             .draw(target)?;
     }
 
-    target.fill_contiguous(&placed, art.px.iter().copied())
+    // Affordance: the whole art box opens the address overlay. A chip so
+    // that is findable on a cover that would otherwise hide it.
+    draw_info_mark(target, box_)
+}
+
+/// Small `i` in the art-box corner. The hit target is the whole box.
+fn draw_info_mark<D>(target: &mut D, box_: Rectangle) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    const CHIP: u32 = 16;
+    let chip = Rectangle::new(
+        Point::new(
+            box_.top_left.x + 2,
+            box_.top_left.y + box_.size.height as i32 - CHIP as i32 - 2,
+        ),
+        Size::new(CHIP, CHIP),
+    );
+    chip.into_styled(PrimitiveStyle::with_fill(Rgb565::CSS_DIM_GRAY))
+        .draw(target)?;
+
+    let style = MonoTextStyle::new(META_FONT, Rgb565::WHITE);
+    let centred = TextStyleBuilder::new()
+        .baseline(Baseline::Middle)
+        .alignment(Alignment::Center)
+        .build();
+    Text::with_text_style(
+        "i",
+        chip.top_left + Point::new(CHIP as i32 / 2, CHIP as i32 / 2),
+        style,
+        centred,
+    )
+    .draw(target)?;
+    Ok(())
 }
 
 /// Repaint the text pane only.

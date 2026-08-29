@@ -44,11 +44,30 @@ const DEFAULT_SSID: &str = "Volumio";
 /// Only reached on an image without `wireless.js`, or before it has run once.
 const FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Wired or wireless, for the word on the status screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    Wired,
+    Wireless,
+}
+
+impl Link {
+    /// What a person should see, not the kernel name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Wired => "LAN",
+            Self::Wireless => "Wi-Fi",
+        }
+    }
+}
+
 /// One address, with the interface it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Address {
-    /// Interface name, e.g. `eth0`.
+    /// Kernel name, kept for a stable sort. The screen uses [`Link::label`].
     pub iface: String,
+    /// Wired or wireless.
+    pub link: Link,
     /// The address, formatted for display.
     pub addr: String,
 }
@@ -125,6 +144,16 @@ impl NetMonitor {
         }
 
         Some(read())
+    }
+
+    /// Always read. Used when opening the address overlay so the
+    /// snapshot is current even if the notifier has not changed.
+    pub fn refresh(&mut self) -> HostInfo {
+        if let Some(mtime) = modified(SIGNAL) {
+            self.seen = Some(mtime);
+        }
+        self.last_poll = std::time::Instant::now();
+        read()
     }
 }
 
@@ -217,11 +246,17 @@ fn addresses() -> Vec<Address> {
             if addr == HOTSPOT_ADDR {
                 return None;
             }
+            let wireless = is_wireless(&i.name);
             Some((
-                !is_wireless(&i.name), // wired sorts first
-                ip.is_ipv6(),          // v4 sorts first
+                !wireless, // wired sorts first
+                ip.is_ipv6(),
                 Address {
                     iface: i.name,
+                    link: if wireless {
+                        Link::Wireless
+                    } else {
+                        Link::Wired
+                    },
                     addr,
                 },
             ))
@@ -323,6 +358,12 @@ mod tests {
     }
 
     #[test]
+    fn link_label_is_what_a_person_reads() {
+        assert_eq!(Link::Wired.label(), "LAN");
+        assert_eq!(Link::Wireless.label(), "Wi-Fi");
+    }
+
+    #[test]
     fn has_address_only_when_there_is_somewhere_to_go() {
         let waiting = HostInfo {
             hostname: "volumio.local".into(),
@@ -345,6 +386,7 @@ mod tests {
             hostname: "volumio.local".into(),
             addrs: vec![Address {
                 iface: "eth0".into(),
+                link: Link::Wired,
                 addr: "192.168.1.2".into(),
             }],
             hotspot: None,

@@ -70,7 +70,8 @@ to need reflashing; see `DEFECTS.md`.
 
 Before Volumio's node process answers, the hostname and the host's addresses,
 updating as they are assigned, and the hotspot SSID if the AP is up. After
-`/status` is `ready` and the first `getState` succeeds, the player.
+`/status` is `ready` and the first `getState` succeeds, the player. Tap
+the cover to see the addresses again for ten seconds.
 
 The renderer starts early and does not wait for `volumio.service`. Without
 that the panel is dark for most of a minute, and the address is the one thing

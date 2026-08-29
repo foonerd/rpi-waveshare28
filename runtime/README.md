@@ -50,9 +50,10 @@ the address is the one thing someone needs before the player is reachable.
 After `/status` is `ready` and the first `getState` succeeds, it shows the
 player: album art, wrapped
 title, artist and album, a volume slider, a progress bar and a transport
-strip. It never returns to the status screen. A failed poll during a Volumio
-restart is transient, and reverting to an address list mid-listening would be
-worse than a slightly stale player.
+strip. A tap on the cover shows the address screen for ten seconds, or
+until the next tap. A failed poll during a Volumio restart is transient,
+and reverting to an address list mid-listening would be worse than a
+slightly stale player.
 
 ## Layout
 
@@ -180,6 +181,7 @@ Anything animated is composed in memory and blitted in one write. Drawing onto
 a `clipped()` view of the panel forces `fill_contiguous` to degrade to
 `draw_iter`, which sets an address window per pixel, and it flickers visibly.
 
-Real addresses win over hotspot mode. `/data/wlan0status` persists across
-boots and can report `hotspot` while the interface is down, so it is not a
-reliable statement of current state on its own.
+LAN addresses and the hotspot are shown together when both are up.
+`/data/wlan0status` persists across boots and can report `hotspot` while
+the interface is down, so it is not a reliable statement of current state
+on its own.

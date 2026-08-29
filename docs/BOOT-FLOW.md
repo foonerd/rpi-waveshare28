@@ -192,6 +192,9 @@ standard library rather than hand-rolled prefix matching.
 Because someone squinting at a 2.8 inch panel wants the address they will
 type, and that is the wired IPv4 one if it exists.
 
+The screen says `LAN` or `Wi-Fi`, not `eth0` or `wlan0`. The kernel name is
+kept only so the order stays stable.
+
 ### Hostname
 
 Shown as `hostname.local`, because avahi is running and that is what most
@@ -230,7 +233,7 @@ written.
 When both are up the screen shows:
 
     <hostname>
-    <iface>  <addr>
+    LAN  <addr>
 
     Wi-Fi setup
     <SSID>
@@ -260,15 +263,15 @@ which stays `starting` until plugins finish plus seven seconds
 - If an address or hotspot is already on screen, a dim `starting` footer
   is pinned near the bottom in the title font, with a one-character spinner
 - On `ready` or timeout: the first successful `getState` switches to the
-  player, and address polling stops
+  player
 - After that: the player screen stays, even if polls start failing
+- A tap on the cover shows the same address screen for ten seconds, or
+  until the next tap. Network watch stays running so that overlay is current
 
 The asymmetry is deliberate. A failing poll during a Volumio restart is
 transient, and reverting to an address screen mid-listening would be worse
-than showing a slightly stale player.
-
-Address polling stops after readiness because it is only there to serve the
-pre-setup case, and there is no reason to pay for it forever.
+than showing a slightly stale player. The overlay is on purpose, and it
+returns to the player.
 
 ---
 
