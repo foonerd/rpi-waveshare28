@@ -23,7 +23,7 @@ set -euo pipefail
 REPO="foonerd/rpi-waveshare28"
 RELEASE_BASE="https://github.com/${REPO}/releases/download"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
-RUNTIME_TAG="runtime-v1.1.0"
+RUNTIME_TAG="runtime-v1.1.1"
 
 BIN_DIR="/usr/local/bin"
 USERCONFIG="/boot/userconfig.txt"
