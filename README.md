@@ -40,9 +40,10 @@ verified against their published sha256 before installation.
 ## Configuration
 
     waveshare28-config show
-    waveshare28-config set rotation=90
+    sudo waveshare28-config set rotation=90
+    sudo waveshare28-config set backend=framebuffer console=release
     waveshare28-config verify
-    waveshare28-config recover
+    sudo waveshare28-config recover
 
 `/boot/waveshare28.conf` is the durable copy, on the one partition that
 survives both an OTA and a factory reset. Everything else the configurator
@@ -186,6 +187,11 @@ Console does not follow the panel automatically. `waveshare28-config` writes
 and removes them for `backend=spi`. `cmdline.txt` is inside the OTA kernel
 tar, so a kernel update can wipe the tokens; `verify` reports that and
 `apply` puts them back.
+
+`console=release` (the default) unbinds fbcon while the unit is running, so
+a USB disconnect cannot paint TTY1 and the QR over the player. The cmdline
+tokens stay: the QR is on this panel at boot and when the service is down.
+`console=share` leaves fbcon bound. The key is ignored on `backend=spi`.
 
 The console font also needs forcing. fbcon picks a font to fit the
 framebuffer, and at 320x240 it chooses 8x8, giving 40 columns by 30 rows. The

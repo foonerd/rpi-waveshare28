@@ -143,6 +143,10 @@ do what the file says for reasons nobody can see.
     backend = "spi"        # or "framebuffer"
     spi_speed_hz = 32000000
 
+`console=share|release` is not a toml key. It lives in `/boot/waveshare28.conf`
+and becomes ExecStartPre/ExecStopPost on the unit: unbind fbcon while the
+player runs so TTY1 cannot overwrite `/dev/fb1`. The renderer never sees it.
+
 Rotation drives layout and touch mapping. On the SPI backend it also rotates
 the panel. On the framebuffer backend fbtft has already rotated the buffer;
 the size must match. The controller always reports in its native 240x320

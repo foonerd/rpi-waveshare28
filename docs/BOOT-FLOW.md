@@ -149,7 +149,7 @@ This is the single change that would have prevented tonight's brick.
 
 ### Recovery path
 
-`waveshare28-config recover` disables and removes both units and reloads
+`sudo waveshare28-config recover` disables and removes both units and reloads
 systemd, for the case where the device still boots but the panel service is
 misbehaving.
 
@@ -324,6 +324,10 @@ Both resolved. The splash unit that applied fbtft after Plymouth started is
 not kept. Firmware-applied fbtft in `userconfig.txt` is the path that puts
 `/dev/fb1` in front of Plymouth. The renderer then uses `backend=framebuffer`
 and draws into that device after `plymouth-quit`.
+
+`console=release` unbinds fbcon from that framebuffer while the unit runs,
+so kernel text on TTY1 cannot overwrite the player. `fbcon=map:1` stays on
+the cmdline; stop the unit and the QR comes back.
 
 Still open, and outside this repository: whether an initramfs hook could
 apply the overlay, let Plymouth run, and remove it so the SPI backend could

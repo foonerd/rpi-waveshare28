@@ -133,8 +133,14 @@ Both console settings live in `cmdline.txt`:
     fbcon=map:1 fbcon=font:VGA8x16
 
 `cmdline.txt` is inside the OTA kernel tar, so it is replaced when an update
-ships one. Not every update does. `waveshare28-config apply` rewrites the
+ships one. Not every update does. `sudo waveshare28-config apply` rewrites the
 `fbcon=` tokens from `backend`; `verify` reports when an OTA has dropped them.
+
+`fbcon=map:1` puts TTY1 on this panel. A USB ethernet disconnect dumps
+kernel text on the console and fbcon redraws `/etc/issue` over the player;
+the renderer is still running, and the next scene change paints it back.
+`console=release` unbinds that vtconsole for the life of the unit and
+rebinds on stop, so the QR remains for boot and for a stopped service.
 
 ### Volumio's /albumart does not proxy remote art
 

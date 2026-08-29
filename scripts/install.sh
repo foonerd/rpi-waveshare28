@@ -211,16 +211,16 @@ install_runtime() {
     "${BIN_DIR}/waveshare28-config" apply
 
     log "runtime installed."
-    log "Rotation:  waveshare28-config set rotation=90"
+    log "Rotation:  sudo waveshare28-config set rotation=90"
     log "Status:    systemctl status waveshare28-panel"
-    log "Recovery:  waveshare28-config recover"
+    log "Recovery:  sudo waveshare28-config recover"
 }
 
 check_conflict() {
     if grep -qE '^dtoverlay=(fbtft|mipi-dbi-spi)' "$USERCONFIG" 2>/dev/null; then
         warn "a display overlay is configured on spi0 cs0 in ${USERCONFIG}."
         warn "backend=spi cannot open /dev/spidev0.0 while that overlay is"
-        warn "firmware-applied. Use 'waveshare28-config set backend=framebuffer'"
+        warn "firmware-applied. Use 'sudo waveshare28-config set backend=framebuffer'"
         warn "to keep it and draw into /dev/fb1 after Plymouth."
     fi
 }
