@@ -9,6 +9,8 @@
 #   waveshare28-config verify
 #   sudo waveshare28-config recover
 #
+# Operator reference: docs/CONFIG.md
+#
 # ## Where the truth lives
 #
 # /boot/waveshare28.conf is the durable copy. /boot survives both an OTA

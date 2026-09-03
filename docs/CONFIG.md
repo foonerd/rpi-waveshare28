@@ -1,0 +1,338 @@
+# Configuration
+
+All configuration goes through `waveshare28-config`. Do not edit
+`userconfig.txt`, `cmdline.txt`, the unit, or `/etc/waveshare28-panel.toml`
+by hand: `apply` regenerates them from the durable file and will overwrite
+you.
+
+    waveshare28-config show
+    sudo waveshare28-config set rotation=270 backend=framebuffer console=release
+    sudo waveshare28-config apply
+    waveshare28-config verify
+    sudo waveshare28-config recover
+
+`set`, `apply` and `recover` need root. `show` and `verify` do not.
+
+---
+
+## Where the truth lives
+
+`/boot/waveshare28.conf` is the durable copy. `/boot` survives both an OTA
+(which extracts a tar over `/boot`, overwriting only what the tar contains)
+and a factory reset (which reformats the data partition and leaves `/boot`
+alone).
+
+Everything else is derived and rewritten by `apply`:
+
+```mermaid
+flowchart LR
+  conf["/boot/waveshare28.conf"]
+  apply["apply"]
+  conf --> apply
+  apply --> uc["userconfig.txt"]
+  apply --> cmd["cmdline.txt"]
+  apply --> toml["waveshare28-panel.toml"]
+  apply --> unit["waveshare28-panel.service"]
+```
+
+| File | Role |
+|---|---|
+| `/boot/waveshare28.conf` | Durable keys. The only file to edit, and only via `set` |
+| `/boot/userconfig.txt` | `dtparam=` / `dtoverlay=` for SPI, touch, and optional fbtft |
+| `/boot/cmdline.txt` | Two `fbcon=` tokens, and only those, when `backend=framebuffer` |
+| `/etc/waveshare28-panel.toml` | What the renderer reads. Overwritten on every `apply` |
+| `/etc/systemd/system/waveshare28-panel.service` | The unit, including fbcon bind/unbind |
+
+A factory reset destroys the root overlay, taking the binary, the unit and
+the module with it. The installer has to be re-run. The durable file
+surviving means that re-run restores the settings rather than asking again.
+
+Never edit `/boot/config.txt` or `/boot/volumioconfig.txt`. They are system
+managed and an OTA overwrites them.
+
+---
+
+## Commands
+
+```mermaid
+flowchart TD
+  show["show: print, no write"]
+  verify["verify: compare, no write"]
+  set["set: write conf"]
+  apply["apply: regenerate derived files"]
+  recover["recover: remove unit, keep conf"]
+  set --> apply
+  recover -.->|"apply reinstates"| apply
+```
+
+### `show`
+
+Prints the loaded settings. No root. A missing durable file is not an
+error: defaults are used and `source` says so.
+
+### `set key=value...`
+
+Writes the durable file, then runs `apply`. Several keys on one line are
+applied together, so a backend and a rotation cannot be half-written.
+
+    sudo waveshare28-config set rotation=270
+    sudo waveshare28-config set backend=framebuffer console=release
+
+Unknown keys are refused. A typo does not become a silent no-op.
+
+`splash=` is obsolete. If it is still in the file, `apply` warns and
+ignores it; use `backend=framebuffer`.
+
+### `apply`
+
+Regenerates every derived file from the durable copy, then enables the
+unit. Use this after an OTA that has dropped `fbcon=` from `cmdline.txt`,
+or after restoring `/boot/waveshare28.conf` onto a freshly installed image.
+
+It validates before writing anything, so a bad value cannot leave the
+system half configured.
+
+### `verify`
+
+Reports drift against the durable file and exits non-zero if anything
+differs. Usable from a health check. It does not change anything.
+
+Checks include: SPI and touch overlays, fbtft lines or their absence,
+`fbcon=` tokens, the generated toml, the unit (including whether it
+unbinds fbcon), that the unit is enabled, that the binary is present, and
+that a touch module exists for the running kernel.
+
+A kernel OTA replaces `cmdline.txt`. Not every update does. `verify`
+names the missing tokens; `apply` puts them back.
+
+### `recover`
+
+Disables and removes the panel unit (and a leftover splash unit from an
+earlier design). Rebinds fbcon if it was released. Does **not** touch
+`/boot/waveshare28.conf`.
+
+For the case where the device still boots but the panel service is
+misbehaving. `sudo waveshare28-config apply` reinstates.
+
+If the device would not boot, the units live on the data partition under
+`/dyn/etc/systemd/` and can be removed with the card in a reader.
+
+---
+
+## Durable keys
+
+Defaults, used when the file is absent or a key is omitted:
+
+    rotation=0
+    speed=32000000
+    backend=spi
+    console=release
+
+### `rotation`
+
+Degrees clockwise: `0`, `90`, `180` or `270`.
+
+This is the only place rotation is set for the renderer. The panel is
+rotated by the display path and touch is mapped back through the same
+value, so the two cannot disagree.
+
+fbtft's `rotate` is counter-clockwise. `apply` converts when it writes
+the overlay:
+
+| `rotation` (clockwise) | `dtparam=rotate=` (fbtft) |
+|---|---|
+| 0 | 0 |
+| 90 | 270 |
+| 180 | 180 |
+| 270 | 90 |
+
+The working orientation on the 2.8 inch module, landscape with the ribbon
+as people usually mount it, is `rotation=270` / `dtparam=rotate=90`.
+
+On `backend=framebuffer` the framebuffer size must match that layout or
+the renderer refuses to open. Changing rotation after a framebuffer boot
+needs a reboot: fbtft has already sized `/dev/fb1`.
+
+### `speed`
+
+SPI clock in hertz. Also the fbtft `speed=` when `backend=framebuffer`.
+Must be a positive integer.
+
+The bcm2835 divides `core_freq` by an even integer, so the achieved rate
+is the nearest divisor step, not this exact value. `32000000` is the
+reference.
+
+### `backend`
+
+`spi` or `framebuffer`. They cannot be mixed: one SPI chip select, one
+owner.
+
+```mermaid
+flowchart TD
+  B{backend}
+  B -->|spi| S["strip fbtft and fbcon="]
+  S --> SD["/dev/spidev0.0"]
+  SD --> R1["renderer owns the bus"]
+  B -->|framebuffer| F["keep fbtft in userconfig.txt"]
+  F --> FB["/dev/fb1"]
+  FB --> P["Plymouth in initramfs"]
+  P --> R2["renderer mmaps fb1"]
+```
+
+**`spi`** — the renderer owns `/dev/spidev0.0` and the DC, reset and
+backlight GPIOs. `apply` removes the fbtft overlay lines and the `fbcon=`
+tokens. `/dev/fb1` will not exist. No Plymouth on this panel.
+
+**`framebuffer`** — fbtft stays in `userconfig.txt` (firmware-applied, not
+removable at runtime) so `/dev/fb1` exists in the initramfs and Plymouth
+can bind it. After `plymouth-quit` the renderer mmaps `/dev/fb1` and
+claims none of those GPIOs. `/dev/spidev0.0` is gone for the life of the
+boot.
+
+A firmware overlay written or removed in `userconfig.txt` is not visible
+until the next reboot. `apply` will say so, enable the unit, and not
+start it on a device that is not there yet.
+
+### `console`
+
+`share` or `release`. Framebuffer only. Ignored on `backend=spi`, with a
+warning if the key is actually in the file.
+
+`fbcon=map:1` stays on the cmdline either way, so TTY1 and the `/etc/issue`
+QR are on this panel at boot and when the service is down.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Boot: map:1 on cmdline
+  Boot --> QR: tty1 on fb1
+  QR --> Player: unit start
+  Player --> QR: unit stop
+```
+
+With `console=release` the start transition unbinds fbcon and the stop
+transition rebinds it. With `console=share` fbcon stays bound in
+`Player`.
+
+**`release`** (default) — the unit unbinds the framebuffer vtconsole for
+the life of the process and rebinds on stop. A USB ethernet disconnect
+cannot dump kernel text onto the player. The QR comes back when the unit
+stops.
+
+**`share`** — fbcon stays bound. Kernel messages and a getty redraw of
+the QR overwrite the player. The renderer is still running; the next
+scene change (or a cover tap) paints it back.
+
+The panel runs as `volumio` and cannot write sysfs. The unit uses
+`ExecStartPre=` / `ExecStopPost=` with `+` so those two writes run as
+root. Switching away from `release` rebinds in `apply` itself, because
+the new unit no longer has an `ExecStopPost` to do it.
+
+---
+
+## What `apply` writes
+
+Keep every `userconfig.txt` line under 100 characters. The firmware
+silently truncates longer lines, dropping the tail of the last parameter,
+with no warning anywhere. That is why the fbtft parameters are split
+rather than written as one `dtoverlay=` line.
+
+Always:
+
+    dtparam=spi=on
+    dtoverlay=cst328
+
+I2C is already enabled on Volumio (`dtparam=i2c_arm=on` in
+`volumioconfig.txt`). SPI is not.
+
+`backend=framebuffer` also writes:
+
+    dtoverlay=fbtft,spi0-0,st7789v
+    dtparam=width=240,height=320
+    dtparam=reset_pin=27,dc_pin=25
+    dtparam=led_pin=18,speed=<speed>
+    dtparam=rotate=<counter-clockwise>
+
+and two tokens on `cmdline.txt`:
+
+    fbcon=map:1 fbcon=font:VGA8x16
+
+`apply` touches only `fbcon=` words on that line. Everything else is
+Volumio's. An empty write is refused outright.
+
+`fbcon=map:1` puts TTY1 on `/dev/fb1`. `fbcon=font:VGA8x16` forces 8x16
+cells so the QR in `/etc/issue` has square modules. fbcon picks 8x8 at
+320x240 otherwise, and half-block characters in an 8x8 cell make each
+module twice as wide as it is tall. The font is built into the kernel;
+`kbd` is not in the Volumio repositories. Both tokens belong together.
+
+`backend=spi` removes the fbtft lines and both `fbcon=` tokens.
+`map:1` would otherwise point at a framebuffer that does not exist.
+
+The generated toml is only what the renderer needs from these keys:
+
+    backend = "framebuffer"
+    fb_dev = "/dev/fb1"
+    rotation = 270
+    spi_speed_hz = 32000000
+
+Edits there are overwritten. Pin map, URLs and poll intervals have
+defaults in the binary that match SKU 27579. They are not keys of
+`waveshare28-config`.
+
+---
+
+## Unit enablement
+
+The unit is a leaf. Nothing depends on it. It is `After=local-fs.target
+plymouth-quit.service` and is not ordered after `volumio.service`: the
+renderer shows addresses until the backend is ready, and waiting would
+leave the panel dark for the whole boot.
+
+`apply` writes the unit, runs `systemd-analyze verify` and refuses on any
+output, then:
+
+```mermaid
+flowchart TD
+  V["systemd-analyze verify"] -->|any output| X["refuse: not enabled"]
+  V -->|clean| D{"device present?"}
+  D -->|fb1 or spidev0.0| S["start, wait 3s"]
+  S -->|still running| E[enable]
+  S -->|died| X
+  D -->|missing| R["enable, ask for reboot"]
+```
+
+- if the backend device exists (`/dev/fb1` or `/dev/spidev0.0`): start,
+  wait, confirm it stayed up, then enable
+- if it does not: stop any current instance, enable, ask for a reboot
+
+A unit that cannot start in the current boot never becomes persistent.
+Two earlier ordering mistakes wedged a device badly enough to need
+reflashing; see `DEFECTS.md`.
+
+---
+
+## Typical setups
+
+Plymouth and the player on this panel (the usual path):
+
+    sudo waveshare28-config set rotation=270 backend=framebuffer console=release
+
+Renderer owns the bus, no splash on this panel:
+
+    sudo waveshare28-config set rotation=270 backend=spi
+
+After a kernel OTA that has dropped `fbcon=`:
+
+    waveshare28-config verify
+    sudo waveshare28-config apply
+
+After a factory reset, re-run the installer. It calls `apply`, which
+reads the surviving `/boot/waveshare28.conf`.
+
+---
+
+## What this file is not
+
+Boot sequencing, readiness, and what the panel *shows* are in
+[BOOT-FLOW.md](BOOT-FLOW.md). Hardware wiring is in the root `README.md`.
+Open defects are in `DEFECTS.md`.
