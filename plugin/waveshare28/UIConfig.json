@@ -24,6 +24,13 @@
           "value": ""
         },
         {
+          "id": "panel_live",
+          "element": "input",
+          "label": "TRANSLATE.PANEL_LIVE",
+          "doc": "TRANSLATE.PANEL_LIVE_DOC",
+          "value": ""
+        },
+        {
           "id": "kms3a",
           "element": "input",
           "label": "TRANSLATE.KMS3A",

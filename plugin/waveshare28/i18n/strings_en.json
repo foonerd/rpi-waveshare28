@@ -5,6 +5,8 @@
   "BOARD_DOC": "Detected Raspberry Pi family and firmware revision. Detection is waveshare28-config detect.",
   "MODEL": "Model",
   "MODEL_DOC": "Device-tree model string.",
+  "PANEL_LIVE": "Panel device",
+  "PANEL_LIVE_DOC": "Live backend device. If the firmware overlay is not on this boot yet, this says a reboot is required.",
   "KMS3A": "3A+ KMS",
   "KMS3A_DOC": "Read-only. The configurator writes this board's revision filter only when it is missing from volumioconfig.txt. Not a user switch.",
   "SETTINGS": "Panel",

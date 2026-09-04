@@ -162,6 +162,23 @@ Waveshare28.prototype.onStart = function () {
   }
 
   self.logger.info('[waveshare28] using ' + self.toolPath + ' on ' + self.board.family);
+
+  // Install only copies files. The panel starts when the user enables
+  // the plugin, not when the zip is unpacked.
+  try {
+    self.runTool(['apply']);
+    const state = JSON.parse(self.runTool(['show', '--json']));
+    if (state.reboot_required) {
+      self.logger.info('[waveshare28] framebuffer overlay not on this boot; reboot required');
+      self.initRebootCountdown();
+    }
+  } catch (e) {
+    self.logger.error('[waveshare28] apply on start failed: ' + e);
+    self.commandRouter.pushToastMessage('error', 'Waveshare 2.8', 'Failed to start the panel.');
+    defer.reject(e);
+    return defer.promise;
+  }
+
   defer.resolve();
   return defer.promise;
 };
@@ -223,6 +240,15 @@ Waveshare28.prototype.getUIConfig = function () {
       if (board.family !== 'pi3a+') {
         removeFields(status, ['kms3a']);
       }
+      setField(status, 'panel_live', function (item) {
+        if (state.reboot_required) {
+          item.value = 'Reboot required (not on this boot)';
+        } else if (state.device) {
+          item.value = String(state.device);
+        } else {
+          item.value = '';
+        }
+      });
 
       setField(settings, 'rotation', function (item) {
         setSelect(item, state.rotation);
@@ -332,11 +358,13 @@ Waveshare28.prototype.coreI18n = function (key, fallback) {
 Waveshare28.prototype.afterSetMaybeReboot = function (before, after, okToast) {
   if (this.needsReboot(before, after)) {
     this.logger.info(
-      '[waveshare28] firmware overlay changed (' +
+      '[waveshare28] firmware overlay not live (' +
         (before && before.backend) +
         ' -> ' +
         (after && after.backend) +
-        '); reboot required'
+        ', reboot_required=' +
+        (after && after.reboot_required) +
+        ')'
     );
     this.initRebootCountdown();
     return;
@@ -346,6 +374,10 @@ Waveshare28.prototype.afterSetMaybeReboot = function (before, after, okToast) {
 
 Waveshare28.prototype.needsReboot = function (before, after) {
   if (!before || !after) {
+    return true;
+  }
+  // apply already said the backend device is not on this boot.
+  if (after.reboot_required) {
     return true;
   }
   if (before.backend !== after.backend) {

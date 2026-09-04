@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Remove the plugin-installed tool. Keep /boot/waveshare28.conf.
+# Remove the plugin-installed tool and every derived file apply wrote.
+# Keep /boot/waveshare28.conf (recover, not purge).
 #
 # Volumio invokes this as `sh uninstall.sh` (dash). No bashisms.
 
@@ -12,7 +13,7 @@ BIN_DIR="/usr/local/bin"
 SUDOERS_FILE="/etc/sudoers.d/volumio-waveshare28"
 
 if [ -x "${BIN_DIR}/waveshare28-config" ]; then
-    echo "recovering panel unit (durable conf kept)"
+    echo "recovering derived files (durable conf kept)"
     "${BIN_DIR}/waveshare28-config" recover || true
 fi
 
