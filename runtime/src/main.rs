@@ -1,7 +1,8 @@
 //! Userspace renderer and touch reader for the Waveshare 2.8 inch SPI LCD.
 //!
 //! Two display backends. `spi` owns `/dev/spidev0.0` and cannot coexist with
-//! an fbtft overlay. `framebuffer` draws into `/dev/fb1` while fbtft holds
+//! an fbtft overlay. `framebuffer` draws into the live `fb_st7789v` node
+//! while fbtft holds
 //! the bus, which is how Plymouth can run in the initramfs and this process
 //! can take over after `plymouth-quit`. Touch is always `/dev/i2c-1`.
 

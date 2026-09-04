@@ -13,6 +13,30 @@ use std::time::Duration;
 
 use crate::http;
 
+/// Volumio sometimes sends numbers as JSON strings (`"40"`). A type
+/// mismatch used to fail the whole poll, which left the panel on the
+/// status screen and ignored every touch.
+fn opt_from_number_or_string<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: std::str::FromStr,
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Number(n)) => n.to_string().parse().ok(),
+        Some(serde_json::Value::String(s)) => {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                s.parse().ok()
+            }
+        }
+        Some(_) => None,
+    })
+}
+
 /// The subset of Volumio's state we render.
 ///
 /// Field names match the API. Everything is optional because the endpoint
@@ -32,14 +56,17 @@ pub struct PlayerState {
     #[serde(rename = "albumart")]
     pub album_art: Option<String>,
     /// Elapsed position. Volumio reports this in milliseconds.
+    #[serde(default, deserialize_with = "opt_from_number_or_string")]
     pub seek: Option<u64>,
-    /// Track length in seconds.
+    /// Track length in seconds. Consume/webradio often sends this as `"0"`.
+    #[serde(default, deserialize_with = "opt_from_number_or_string")]
     pub duration: Option<u64>,
     /// Sample rate as a display string, e.g. "44.1 kHz".
     pub samplerate: Option<String>,
     /// Bit depth as a display string, e.g. "16 bit".
     pub bitdepth: Option<String>,
-    /// Output volume, 0 to 100.
+    /// Output volume, 0 to 100. The API sends a number or a string.
+    #[serde(default, deserialize_with = "opt_from_number_or_string")]
     pub volume: Option<u8>,
     /// Mute state.
     pub mute: Option<bool>,
@@ -210,5 +237,43 @@ mod status_tests {
         );
         assert_eq!(SystemStatus::parse("error"), Some(SystemStatus::Error));
         assert_eq!(SystemStatus::parse("nope"), None);
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::PlayerState;
+
+    fn parse(json: &str) -> PlayerState {
+        serde_json::from_str(json).expect(json)
+    }
+
+    #[test]
+    fn volume_accepts_a_number_or_a_string() {
+        assert_eq!(parse(r#"{"volume":40}"#).volume, Some(40));
+        assert_eq!(parse(r#"{"volume":"40"}"#).volume, Some(40));
+        assert_eq!(parse(r#"{"volume":" 40 "}"#).volume, Some(40));
+        assert_eq!(parse(r#"{"volume":null}"#).volume, None);
+        assert_eq!(parse(r#"{}"#).volume, None);
+        assert_eq!(parse(r#"{"volume":""}"#).volume, None);
+        assert_eq!(parse(r#"{"volume":"loud"}"#).volume, None);
+    }
+
+    #[test]
+    fn seek_and_duration_accept_a_number_or_a_string() {
+        let state = parse(r#"{"seek":1234,"duration":"180"}"#);
+        assert_eq!(state.seek, Some(1234));
+        assert_eq!(state.duration, Some(180));
+        assert_eq!(parse(r#"{"duration":"0"}"#).duration, Some(0));
+    }
+
+    #[test]
+    fn string_volume_does_not_fail_the_poll() {
+        // The Pi 5 getState body that left the panel on the status screen.
+        let state =
+            parse(r#"{"status":"play","title":"Track","artist":"A","volume":"40","mute":false}"#);
+        assert_eq!(state.status.as_deref(), Some("play"));
+        assert_eq!(state.volume, Some(40));
+        assert!(!state.is_muted());
     }
 }

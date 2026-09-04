@@ -4,7 +4,8 @@ Userspace renderer and touch reader for the Waveshare 2.8 inch SPI LCD.
 
 Two display backends, plus a CST328 reader over `/dev/i2c-1`. No X, no DRM,
 no compositor, no kernel input driver. `spi` drives the ST7789V over
-`/dev/spidev0.0`. `framebuffer` mmaps `/dev/fb1` while fbtft holds the bus.
+`/dev/spidev0.0`. `framebuffer` mmaps the live `fb_st7789v` node while fbtft
+holds the bus.
 
 Independent of `kernel/`. Nothing is shared between them.
 
@@ -21,10 +22,10 @@ This binary is around 2 MB resident against Chromium's hundreds.
 
 An fbtft overlay on spi0 cs0 disables `/dev/spidev0.0`. Firmware-applied
 (in `userconfig.txt`) it cannot be removed later, which is also why Plymouth
-can bind `/dev/fb1` in the initramfs.
+can bind the `fb_st7789v` node in the initramfs.
 
     backend = "spi"            # owns the bus; configurator strips fbtft
-    backend = "framebuffer"    # mmaps /dev/fb1; configurator keeps fbtft
+    backend = "framebuffer"    # mmaps fb_st7789v; configurator keeps fbtft
 
 `framebuffer` claims neither SPI nor the DC/reset/backlight GPIOs. Touch
 stays on i2cdev. I2C is already enabled on Volumio via `dtparam=i2c_arm=on`

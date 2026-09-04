@@ -21,6 +21,10 @@ use std::path::{Path, PathBuf};
 use crate::config::fbtft_rotate;
 use crate::ui::Layout;
 
+/// Sysfs `name` of the fbtft ST7789V node. HDMI and bcm2708_fb/KMS
+/// register other names on other `/dev/fbN` indices; those are not this panel.
+pub const PANEL_FB_NAME: &str = "fb_st7789v";
+
 /// mmap'd 16-bit RGB565 framebuffer.
 pub struct FbDev {
     map: MmapMut,
@@ -36,6 +40,13 @@ impl FbDev {
     #[allow(unsafe_code)]
     pub fn open(path: &str, layout: &Layout) -> Result<Self> {
         let sys = graphics_sysfs(path);
+        let name = read_fb_name(&sys).with_context(|| format!("reading {path} name"))?;
+        if name != PANEL_FB_NAME {
+            anyhow::bail!(
+                "{path} is {name}, not {PANEL_FB_NAME}. \
+                 bcm2708_fb/KMS generic framebuffers are not this panel."
+            );
+        }
         let (width, height) = read_virtual_size(&sys)?;
         let bits = read_sysfs_u32(&sys.join("bits_per_pixel"), "bits_per_pixel")?;
         if bits != 16 {
@@ -188,8 +199,74 @@ impl DrawTarget for FbDev {
     }
 }
 
+/// Prefer `preferred` when that node is `fb_st7789v`. Otherwise scan
+/// `/sys/class/graphics` for that name. Never fall through to a KMS node.
+pub fn resolve_fb_dev(preferred: &str) -> Result<String> {
+    let found = resolve_fb_dev_in(Path::new("/sys/class/graphics"), preferred)?;
+    if found != preferred {
+        tracing::info!(
+            preferred,
+            found,
+            "using live {PANEL_FB_NAME} instead of configured fb_dev"
+        );
+    }
+    Ok(found)
+}
+
+fn resolve_fb_dev_in(sys_graphics: &Path, preferred: &str) -> Result<String> {
+    if fb_name_in(sys_graphics, preferred).as_deref() == Some(PANEL_FB_NAME) {
+        return Ok(preferred.to_string());
+    }
+    if let Some(found) = find_named_fb(sys_graphics, PANEL_FB_NAME) {
+        return Ok(found);
+    }
+    match fb_name_in(sys_graphics, preferred) {
+        Some(name) => anyhow::bail!(
+            "{preferred} is {name}, not {PANEL_FB_NAME}. No panel framebuffer found. \
+             bcm2708_fb/KMS generic framebuffers are not this panel."
+        ),
+        None => anyhow::bail!("no {PANEL_FB_NAME} framebuffer found (looked at {preferred})"),
+    }
+}
+
 fn graphics_sysfs(dev: &str) -> PathBuf {
     PathBuf::from("/sys/class/graphics").join(Path::new(dev).file_name().unwrap_or_default())
+}
+
+fn fb_name_in(sys_graphics: &Path, dev: &str) -> Option<String> {
+    let node = sys_graphics.join(Path::new(dev).file_name().unwrap_or_default());
+    read_fb_name(&node).ok()
+}
+
+fn find_named_fb(sys_graphics: &Path, want: &str) -> Option<String> {
+    let mut matches = Vec::new();
+    for ent in fs::read_dir(sys_graphics).ok()? {
+        let ent = ent.ok()?;
+        let fname = ent.file_name();
+        let fname = fname.to_string_lossy();
+        let Some(idx) = fname.strip_prefix("fb") else {
+            continue;
+        };
+        let Ok(n) = idx.parse::<u32>() else {
+            continue;
+        };
+        let name = fs::read_to_string(ent.path().join("name")).ok()?;
+        if name.trim() == want {
+            matches.push((n, format!("/dev/{fname}")));
+        }
+    }
+    matches.sort_by_key(|(n, _)| *n);
+    matches.into_iter().next().map(|(_, p)| p)
+}
+
+fn read_fb_name(sys: &Path) -> Result<String> {
+    let text = fs::read_to_string(sys.join("name"))
+        .with_context(|| format!("reading {}/name", sys.display()))?;
+    let name = text.trim();
+    if name.is_empty() {
+        anyhow::bail!("empty framebuffer name in {}/name", sys.display());
+    }
+    Ok(name.to_string())
 }
 
 fn read_virtual_size(sys: &Path) -> Result<(u32, u32)> {
@@ -220,5 +297,54 @@ mod tests {
         assert_eq!(parse_virtual_size("320,240\n"), Some((320, 240)));
         assert_eq!(parse_virtual_size("240,320"), Some((240, 320)));
         assert_eq!(parse_virtual_size("nope"), None);
+    }
+
+    fn write_name(root: &Path, fb: &str, name: &str) {
+        let dir = root.join(fb);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("name"), format!("{name}\n")).unwrap();
+    }
+
+    #[test]
+    fn resolve_keeps_preferred_when_it_is_the_panel() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_name(tmp.path(), "fb0", "BCM2708 FB");
+        write_name(tmp.path(), "fb1", PANEL_FB_NAME);
+        assert_eq!(
+            resolve_fb_dev_in(tmp.path(), "/dev/fb1").unwrap(),
+            "/dev/fb1"
+        );
+    }
+
+    #[test]
+    fn resolve_skips_kms_and_finds_the_panel() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_name(tmp.path(), "fb0", "BCM2708 FB");
+        write_name(tmp.path(), "fb1", PANEL_FB_NAME);
+        assert_eq!(
+            resolve_fb_dev_in(tmp.path(), "/dev/fb0").unwrap(),
+            "/dev/fb1"
+        );
+    }
+
+    #[test]
+    fn resolve_finds_the_panel_on_fb0() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_name(tmp.path(), "fb0", PANEL_FB_NAME);
+        assert_eq!(
+            resolve_fb_dev_in(tmp.path(), "/dev/fb1").unwrap(),
+            "/dev/fb0"
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_kms_when_the_panel_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_name(tmp.path(), "fb0", "BCM2708 FB");
+        let err = resolve_fb_dev_in(tmp.path(), "/dev/fb0")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("BCM2708 FB"), "{err}");
+        assert!(err.contains(PANEL_FB_NAME), "{err}");
     }
 }

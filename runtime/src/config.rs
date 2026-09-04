@@ -52,6 +52,9 @@ pub struct Config {
     /// Drawing path. See [`Backend`].
     pub backend: Backend,
     /// Framebuffer device used when `backend` is `framebuffer`.
+    ///
+    /// Hint only. The renderer opens the live `fb_st7789v` node, so a
+    /// stale `/dev/fb1` cannot select the firmware KMS framebuffer.
     pub fb_dev: String,
     /// SPI character device the ST7789V is on.
     pub spi_dev: String,

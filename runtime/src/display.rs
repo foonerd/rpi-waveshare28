@@ -21,7 +21,7 @@ use mipidsi::{Builder, Display};
 
 use crate::art::Art;
 use crate::config::{Backend, Config};
-use crate::fbdev::FbDev;
+use crate::fbdev::{resolve_fb_dev, FbDev};
 use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::ui::{self, Layout, TextPane};
@@ -176,7 +176,8 @@ impl Panel {
 }
 
 fn open_fb(cfg: &Config, layout: Layout) -> Result<Panel> {
-    let fb = FbDev::open(&cfg.fb_dev, &layout).context("opening framebuffer")?;
+    let path = resolve_fb_dev(&cfg.fb_dev)?;
+    let fb = FbDev::open(&path, &layout).context("opening framebuffer")?;
     Ok(Panel {
         surface: Surface::Fb(fb),
         backlight: None,

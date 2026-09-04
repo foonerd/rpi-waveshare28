@@ -83,17 +83,36 @@ kernel_version() {
 # at the first ARMv7-only instruction, which is a considerably worse failure
 # than refusing to install.
 #
-# Note that uname -m reports the kernel architecture, not the userland. That
-# is the right question here: these binaries are static, so the userland ABI
-# is irrelevant and only the kernel's ability to execute them matters. A
-# 64-bit kernel with a 32-bit userland, which Volumio does not currently
-# ship, would still run the aarch64 binary.
+# uname -m is the kernel, not the image. Pi 5 Volumio 4 is a 64-bit v8+
+# kernel (aarch64) on 32-bit Raspbian: VOLUMIO_ARCH=arm, dpkg=armhf,
+# getconf LONG_BIT=32. That image wants the armv7 artefact. Using uname
+# alone installed aarch64 on pi5dev, which the kernel can exec but is
+# the wrong stream for this userland.
 runtime_arch() {
+    local varch dpkg
+    varch="$(sed -n 's/^VOLUMIO_ARCH=//p' /etc/os-release 2>/dev/null | tr -d '"')"
+    dpkg="$(dpkg --print-architecture 2>/dev/null || true)"
+
+    case "$varch" in
+        arm|armv7) printf 'armv7-unknown-linux-musleabihf'; return 0 ;;
+        armv6)     printf 'arm-unknown-linux-musleabihf'; return 0 ;;
+        aarch64|arm64) printf 'aarch64-unknown-linux-musl'; return 0 ;;
+    esac
+    case "$dpkg" in
+        armhf|armel)
+            case "$(uname -m)" in
+                armv6l) printf 'arm-unknown-linux-musleabihf' ;;
+                *)      printf 'armv7-unknown-linux-musleabihf' ;;
+            esac
+            return 0
+            ;;
+        arm64) printf 'aarch64-unknown-linux-musl'; return 0 ;;
+    esac
     case "$(uname -m)" in
         armv6l)  printf 'arm-unknown-linux-musleabihf' ;;
         armv7l)  printf 'armv7-unknown-linux-musleabihf' ;;
         aarch64) printf 'aarch64-unknown-linux-musl' ;;
-        *)       die "unsupported architecture: $(uname -m)" ;;
+        *)       die "unsupported architecture: $(uname -m) (VOLUMIO_ARCH=${varch:-?} dpkg=${dpkg:-?})" ;;
     esac
 }
 
@@ -221,7 +240,7 @@ check_conflict() {
         warn "a display overlay is configured on spi0 cs0 in ${USERCONFIG}."
         warn "backend=spi cannot open /dev/spidev0.0 while that overlay is"
         warn "firmware-applied. Use 'sudo waveshare28-config set backend=framebuffer'"
-        warn "to keep it and draw into /dev/fb1 after Plymouth."
+        warn "to keep it and draw into the fbtft framebuffer after Plymouth."
     fi
 }
 

@@ -6,7 +6,7 @@
 #   runtime/  cross-compiles a userspace Rust binary
 #
 # backend=spi cannot share spi0 cs0 with an fbtft overlay. backend=framebuffer
-# can: it draws into /dev/fb1 while fbtft holds the bus. Building both halves
+# can: it draws into the fb_st7789v node while fbtft holds the bus. Building both halves
 # is always fine.
 
 .PHONY: help kernel runtime validate fmt-fix dist clean

@@ -5,6 +5,7 @@
 # Usage:
 #   waveshare28-config show
 #   sudo waveshare28-config set rotation=270 backend=framebuffer console=release
+#   sudo waveshare28-config set hdmi=on
 #   sudo waveshare28-config apply
 #   waveshare28-config verify
 #   sudo waveshare28-config recover
@@ -29,23 +30,43 @@
 # initramfs, so fbtft must be in userconfig.txt (firmware-applied, not
 # removable). The renderer then cannot open /dev/spidev0.0.
 #
-# backend=framebuffer keeps those fbtft lines and draws into /dev/fb1 after
-# plymouth-quit. backend=spi is the original path: it removes the fbtft lines
-# so the process can own the bus itself. The two cannot be mixed.
+# backend=framebuffer keeps those fbtft lines and draws into the fbtft
+# node after plymouth-quit. That node is whichever /dev/fbN has the
+# sysfs name fb_st7789v. Index is not assumed: HDMI or bcm2708_fb/KMS
+# can take fb0 (640x480 on this firmware) and leave the panel on fb1,
+# or the panel can be the only node and sit on fb0.
+# backend=spi is the original path: it removes the fbtft lines so the
+# process can own the bus itself. The two cannot be mixed.
 #
 # fbtft rotate is counter-clockwise. This file's rotation is clockwise. The
 # same physical orientation is a different number in each: rotation=270 is
 # dtparam=rotate=90.
 #
 # cmdline.txt is owned for two tokens only, and only on backend=framebuffer:
-# fbcon=map:1 (tty1 on /dev/fb1) and fbcon=font:VGA8x16 (square QR modules).
+# fbcon=map:N (tty1 on the panel framebuffer) and fbcon=font:VGA8x16
+# (square QR modules). N is the fb_st7789v index, not a hardcoded 1.
 # backend=spi removes them. A kernel OTA replaces cmdline.txt; verify
 # reports that, apply puts the tokens back.
 #
-# console= is framebuffer only. map:1 stays on the cmdline so the QR is on
+# console= is framebuffer only. map:N stays on the cmdline so the QR is on
 # this panel at boot and when the unit is down. release unbinds fbcon for
 # the life of the unit (kernel text cannot overwrite the player) and
 # rebinds on stop. share leaves fbcon bound. Ignored on backend=spi.
+#
+# Volumio writes hdmi_force_hotplug=1 in volumioconfig.txt. On a Pi 4
+# that creates a 640x480 HDMI framebuffer and Plymouth binds it.
+#
+# apply detects the board (device-tree compatible). Pi 4 / 400 / CM4
+# plus backend=framebuffer plus hdmi=off (the default) writes:
+#
+#   [pi4]
+#   hdmi_force_hotplug=0
+#   [all]
+#
+# hdmi=on keeps Volumio's force-hotplug: HDMI audio or a real monitor.
+# Other boards ignore hdmi=. The [pi4] filter is a second gate so a
+# copied userconfig cannot turn off HDMI on a Pi 5. backend=spi removes
+# the stanza.
 
 set -euo pipefail
 
@@ -53,7 +74,7 @@ CONF="/boot/waveshare28.conf"
 USERCONFIG="/boot/userconfig.txt"
 CMDLINE="/boot/cmdline.txt"
 TOML="/etc/waveshare28-panel.toml"
-FBCON_MAP="fbcon=map:1"
+PANEL_FB_NAME="fb_st7789v"
 FBCON_FONT="fbcon=font:VGA8x16"
 UNIT_DIR="/etc/systemd/system"
 BIN_DIR="/usr/local/bin"
@@ -64,9 +85,11 @@ rotation=0
 speed=32000000
 backend=spi
 console=release
-# Set when the durable file itself contained console=. Used to warn on spi
-# only when the operator asked for it, not because of the default.
+hdmi=off
+# Set when the durable file itself contained the key. Used to warn when
+# the key cannot apply, not because of the default.
 console_set=0
+hdmi_set=0
 
 log()  { printf '[waveshare28] %s\n' "$*"; }
 warn() { printf '[waveshare28] WARNING: %s\n' "$*" >&2; }
@@ -97,6 +120,48 @@ validate_console() {
     esac
 }
 
+validate_hdmi() {
+    case "$1" in
+        off|on) ;;
+        *) die "hdmi must be off or on, got '$1'" ;;
+    esac
+}
+
+# bcm2711 is Pi 4, Pi 400 and CM4. Those share Volumio's HDMI force-hotplug.
+is_pi4_family() {
+    local compat
+    compat="$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null || true)"
+    case "$compat" in
+        *bcm2711*) return 0 ;;
+    esac
+    return 1
+}
+
+# Short board label for show. Detection is compatible first, then model.
+detect_pi() {
+    local compat model
+    compat="$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null || true)"
+    case "$compat" in
+        *bcm2712*) printf 'pi5'; return 0 ;;
+        *bcm2711*) printf 'pi4'; return 0 ;;
+        *bcm2837*|*bcm2710*) printf 'pi3'; return 0 ;;
+        *bcm2836*) printf 'pi2'; return 0 ;;
+        *bcm2835*) printf 'pi0'; return 0 ;;
+    esac
+    model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+    case "$model" in
+        *'Pi 5'*|*'Compute Module 5'*) printf 'pi5' ;;
+        *'Compute Module 4'*|*'Pi 400'*|*'Pi 4'*) printf 'pi4' ;;
+        *'Pi 3'*) printf 'pi3' ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+# Write the Pi 4 HDMI-off stanza when this board needs it.
+want_pi4_hdmi_off() {
+    [[ "$backend" == framebuffer && "$hdmi" == off ]] && is_pi4_family
+}
+
 # Clockwise (this file) to counter-clockwise (fbtft rotate=).
 fbtft_rotate() {
     case "$1" in
@@ -106,17 +171,47 @@ fbtft_rotate() {
     esac
 }
 
-# Device the current backend must open. Absent until the next boot when
-# apply has just written or removed a firmware overlay.
+# Live index of fb_st7789v. Empty if the overlay is not visible yet.
+# Name only: a free slot or "the only /dev/fb" can be bcm2708_fb/KMS.
+live_panel_fb_index() {
+    local d name
+    for d in /sys/class/graphics/fb[0-9]*; do
+        [[ -e "$d/name" ]] || continue
+        name="$(tr -d '[:space:]' < "$d/name")"
+        if [[ "$name" == "$PANEL_FB_NAME" ]]; then
+            printf '%s' "${d##*/fb}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+panel_fb_dev() {
+    local idx
+    idx="$(live_panel_fb_index)" || return 1
+    printf '/dev/fb%s' "$idx"
+}
+
+fbcon_map_token() {
+    local idx
+    idx="$(live_panel_fb_index)" || return 1
+    printf 'fbcon=map:%s' "$idx"
+}
+
+# Device the current backend must open. Framebuffer is the live
+# fb_st7789v node only; guessing the next free /dev/fbN can select the
+# firmware KMS framebuffer. Absent until the next boot when apply has
+# just written or removed a firmware overlay.
 backend_device() {
     case "$backend" in
-        framebuffer) printf '/dev/fb1' ;;
+        framebuffer) panel_fb_dev ;;
         spi)         printf '/dev/spidev0.0' ;;
     esac
 }
 
 load_conf() {
     console_set=0
+    hdmi_set=0
     [[ -f "$CONF" ]] || return 0
 
     local line key value
@@ -131,6 +226,7 @@ load_conf() {
             speed)    speed="$value" ;;
             backend)  backend="$value" ;;
             console)  console="$value"; console_set=1 ;;
+            hdmi)     hdmi="$value"; hdmi_set=1 ;;
             splash)   warn "'splash' is obsolete; use backend=framebuffer" ;;
             *)        warn "ignoring unknown key in ${CONF}: ${key}" ;;
         esac
@@ -154,14 +250,19 @@ rotation=${rotation}
 speed=${speed}
 
 # spi: renderer owns the bus. framebuffer: fbtft stays for Plymouth, renderer
-# draws into /dev/fb1 after plymouth-quit.
+# draws into the fbtft node after plymouth-quit.
 backend=${backend}
 
 # framebuffer only. What tty1 does while the player is running.
-# share:   fbcon stays on fb1 (QR always here; kernel text can overwrite)
+# share:   fbcon stays on the panel (QR always here; kernel text can overwrite)
 # release: unbind fbcon for the life of the unit, rebind when it stops
 # Ignored on backend=spi.
 console=${console}
+
+# Pi 4 framebuffer only. off: cancel Volumio hdmi_force_hotplug=1 so
+# Plymouth can use the panel. on: keep HDMI (audio or a real monitor).
+# Ignored on other boards and on backend=spi.
+hdmi=${hdmi}
 EOF
     log "wrote ${CONF}"
 }
@@ -179,6 +280,75 @@ ensure_line() {
         log "adding to userconfig.txt: ${line}"
         printf '%s\n' "$line" >> "$USERCONFIG"
     }
+}
+
+# True when userconfig.txt already has the Pi 4 HDMI-off stanza.
+has_pi4_hdmi_off() {
+    [[ -f "$USERCONFIG" ]] || return 1
+    awk '
+        /^\[pi4\]$/ {
+            if ((getline n) > 0 && n == "hdmi_force_hotplug=0") {
+                if ((getline n2) > 0 && n2 == "[all]") {
+                    found = 1
+                    exit
+                }
+            }
+        }
+        END { exit !found }
+    ' "$USERCONFIG"
+}
+
+# Drop a previous HDMI-off form: the [pi4] triplet, or a bare
+# hdmi_force_hotplug= left from a hand test.
+remove_hdmi_off() {
+    [[ -f "$USERCONFIG" ]] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+        /^\[pi4\]$/ {
+            if ((getline n) > 0 && n == "hdmi_force_hotplug=0") {
+                if ((getline n2) > 0 && n2 == "[all]") next
+                print
+                print n
+                print n2
+                next
+            }
+            print
+            if (n != "") print n
+            next
+        }
+        /^hdmi_force_hotplug=/ { next }
+        { print }
+    ' "$USERCONFIG" > "$tmp"
+    if ! cmp -s "$tmp" "$USERCONFIG"; then
+        log "removing from userconfig.txt: hdmi_force_hotplug / [pi4] stanza"
+        cat "$tmp" > "$USERCONFIG"
+    fi
+    rm -f "$tmp"
+}
+
+# Framebuffer only. Firmware [pi4] filter so Pi 5 / Pi 3 are untouched.
+ensure_pi4_hdmi_off() {
+    [[ -f "$USERCONFIG" ]] || die "${USERCONFIG} not found; is this a Volumio Pi image?"
+    if has_pi4_hdmi_off; then
+        return 0
+    fi
+    remove_hdmi_off
+    log "adding to userconfig.txt: [pi4] hdmi_force_hotplug=0 [all]"
+    local tmp
+    tmp="$(mktemp)"
+    {
+        if head -n1 "$USERCONFIG" | grep -q '^#'; then
+            head -n1 "$USERCONFIG"
+            printf '%s\n' '[pi4]' 'hdmi_force_hotplug=0' '[all]'
+            tail -n +2 "$USERCONFIG"
+        else
+            printf '%s\n' '[pi4]' 'hdmi_force_hotplug=0' '[all]'
+            cat "$USERCONFIG"
+        fi
+    } > "$tmp"
+    cat "$tmp" > "$USERCONFIG"
+    rm -f "$tmp"
 }
 
 remove_lines() {
@@ -216,14 +386,21 @@ strip_fbcon() {
     printf '%s' "$out"
 }
 
-# backend=framebuffer: tty1 on fb1, 8x16 cells so the /etc/issue QR is square.
-# backend=spi: no fb1, so map:1 would point at nothing; strip both tokens.
+# backend=framebuffer: tty1 on the panel framebuffer, 8x16 cells so the
+# /etc/issue QR is square. map:N is written only for a live fb_st7789v
+# node. Guessing N can put the console on bcm2708_fb/KMS. backend=spi:
+# no panel fb, so strip both tokens.
 apply_fbcon() {
-    local line
+    local line map
     line="$(strip_fbcon "$(read_cmdline)")"
     if [[ "$backend" == framebuffer ]]; then
-        line="${line} ${FBCON_MAP} ${FBCON_FONT}"
-        log "cmdline.txt: ${FBCON_MAP} ${FBCON_FONT}"
+        if map="$(fbcon_map_token)"; then
+            line="${line} ${map} ${FBCON_FONT}"
+            log "cmdline.txt: ${map} ${FBCON_FONT}"
+        else
+            line="${line} ${FBCON_FONT}"
+            log "cmdline.txt: ${FBCON_FONT} (fbcon=map deferred until ${PANEL_FB_NAME} is present)"
+        fi
     else
         log "cmdline.txt: removed fbcon= (backend=spi)"
     fi
@@ -231,7 +408,7 @@ apply_fbcon() {
 }
 
 # Bind (1) or unbind (0) the framebuffer vtconsole. Dummy/serial vtcons are
-# left alone. Missing vtcon is not fatal: SPI has no fb1, and a kernel
+# left alone. Missing vtcon is not fatal: SPI has no panel fb, and a kernel
 # without fbcon should not stop the panel starting.
 fbcon_bind() {
     local want="$1"
@@ -260,11 +437,17 @@ fbcon_bind() {
 }
 
 write_toml() {
+    local fb_line=""
+    if [[ "$backend" == framebuffer ]]; then
+        local fb_dev
+        if fb_dev="$(panel_fb_dev)"; then
+            fb_line="fb_dev = \"${fb_dev}\""$'\n'
+        fi
+    fi
     cat > "$TOML" <<EOF
 # Generated by waveshare28-config from ${CONF}. Edits here are overwritten.
 backend = "${backend}"
-fb_dev = "/dev/fb1"
-rotation = ${rotation}
+${fb_line}rotation = ${rotation}
 spi_speed_hz = ${speed}
 EOF
     log "wrote ${TOML}"
@@ -318,9 +501,9 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=waveshare28-panel
-# SPI backend: /dev/spidev0.0, i2c, gpio. Framebuffer backend: /dev/fb1
+# SPI backend: /dev/spidev0.0, i2c, gpio. Framebuffer backend: /dev/fbN
 # (video group) plus i2c and gpio for touch. Volumio already puts the
-# volumio user in spi, i2c and gpio; video is added here for /dev/fb1.
+# volumio user in spi, i2c and gpio; video is added here for /dev/fbN.
 ${post}User=volumio
 Group=volumio
 SupplementaryGroups=spi i2c gpio video
@@ -355,13 +538,15 @@ enable_safely() {
     fi
 
     local dev
-    dev="$(backend_device)"
-
-    if [[ ! -e "$dev" ]]; then
-        log "${dev} is not present; backend=${backend} applies on the next boot"
+    if ! dev="$(backend_device)" || [[ ! -e "$dev" ]]; then
+        if [[ "$backend" == framebuffer ]]; then
+            log "${PANEL_FB_NAME} is not present; backend=framebuffer applies on the next boot"
+        else
+            log "${dev:-/dev/spidev0.0} is not present; backend=${backend} applies on the next boot"
+        fi
         systemctl stop "$UNIT" >/dev/null 2>&1 || true
         systemctl enable "$UNIT" >/dev/null
-        log "unit enabled. Reboot for ${dev} to appear, then the panel starts."
+        log "unit enabled. Reboot for the backend device to appear, then the panel starts."
         return 0
     fi
 
@@ -388,11 +573,19 @@ cmd_apply() {
     validate_rotation "$rotation"
     validate_backend "$backend"
     validate_console "$console"
+    validate_hdmi "$hdmi"
     if ! [[ "$speed" =~ ^[0-9]+$ ]] || [[ "$speed" -le 0 ]]; then
         die "speed must be a positive number, got '${speed}'"
     fi
     if [[ "$backend" != framebuffer && "$console_set" -eq 1 ]]; then
         warn "console=${console} is ignored on backend=spi"
+    fi
+    if [[ "$hdmi_set" -eq 1 ]]; then
+        if [[ "$backend" != framebuffer ]]; then
+            warn "hdmi=${hdmi} is ignored on backend=spi"
+        elif ! is_pi4_family; then
+            warn "hdmi=${hdmi} is ignored on $(detect_pi) (Pi 4 family only)"
+        fi
     fi
 
     # Rewrite the display overlay set rather than appending. A leftover
@@ -405,6 +598,11 @@ cmd_apply() {
     ensure_line "dtoverlay=cst328"
 
     if [[ "$backend" == framebuffer ]]; then
+        if want_pi4_hdmi_off; then
+            ensure_pi4_hdmi_off
+        else
+            remove_hdmi_off
+        fi
         local ccw
         ccw="$(fbtft_rotate "$rotation")"
         ensure_line "dtoverlay=fbtft,spi0-0,st7789v"
@@ -412,11 +610,22 @@ cmd_apply() {
         ensure_line "dtparam=reset_pin=27,dc_pin=25"
         ensure_line "dtparam=led_pin=18,speed=${speed}"
         ensure_line "dtparam=rotate=${ccw}"
+    else
+        remove_hdmi_off
     fi
 
     apply_fbcon
 
     write_toml
+    if [[ "$backend" == framebuffer ]]; then
+        local fb_dev
+        if fb_dev="$(panel_fb_dev)"; then
+            log "panel framebuffer is ${fb_dev} (${PANEL_FB_NAME})"
+        else
+            log "panel framebuffer not on this boot; renderer will find ${PANEL_FB_NAME} after reboot"
+            log "run apply again after that boot to pin fbcon=map to the live node"
+        fi
+    fi
     write_unit
     # Switching away from release replaces the unit before stop, so the new
     # definition has no ExecStopPost to put tty1 back. Do it here.
@@ -429,8 +638,9 @@ cmd_apply() {
     if [[ "$backend" == framebuffer ]]; then
         log "rotation=${rotation} clockwise is dtparam=rotate=$(fbtft_rotate "$rotation")."
     fi
-    if [[ ! -e "$(backend_device)" ]]; then
-        log "reboot required: $(backend_device) is not on this boot."
+    local dev
+    if ! dev="$(backend_device)" || [[ ! -e "$dev" ]]; then
+        log "reboot required: backend device is not on this boot."
     fi
 }
 
@@ -447,6 +657,7 @@ cmd_set() {
             speed)    speed="$value" ;;
             backend)  backend="$value" ;;
             console)  console="$value"; console_set=1 ;;
+            hdmi)     hdmi="$value"; hdmi_set=1 ;;
             *)        die "unknown setting: ${key}" ;;
         esac
     done
@@ -454,6 +665,7 @@ cmd_set() {
     validate_rotation "$rotation"
     validate_backend "$backend"
     validate_console "$console"
+    validate_hdmi "$hdmi"
     save_conf
     cmd_apply
 }
@@ -465,10 +677,31 @@ cmd_show() {
     printf 'backend  = %s\n' "$backend"
     if [[ "$backend" == framebuffer ]]; then
         printf 'fbtft    = rotate=%s (counter-clockwise)\n' "$(fbtft_rotate "$rotation")"
-        printf 'fbcon    = %s %s\n' "$FBCON_MAP" "$FBCON_FONT"
+        local fb_dev map
+        if fb_dev="$(panel_fb_dev)"; then
+            printf 'fb       = %s (%s)\n' "$fb_dev" "$PANEL_FB_NAME"
+        else
+            printf 'fb       = %s not registered on this boot\n' "$PANEL_FB_NAME"
+        fi
+        if map="$(fbcon_map_token)"; then
+            printf 'fbcon    = %s %s\n' "$map" "$FBCON_FONT"
+        else
+            printf 'fbcon    = %s (map deferred until %s)\n' "$FBCON_FONT" "$PANEL_FB_NAME"
+        fi
+        printf 'board    = %s\n' "$(detect_pi)"
+        if want_pi4_hdmi_off; then
+            printf 'hdmi     = off ([pi4] force_hotplug=0)\n'
+        elif [[ "$hdmi" == on ]]; then
+            printf 'hdmi     = on (HDMI kept; Plymouth stays on HDMI)\n'
+        else
+            printf 'hdmi     = off (ignored on %s)\n' "$(detect_pi)"
+        fi
         printf 'console  = %s\n' "$console"
     elif [[ "$console_set" -eq 1 ]]; then
         printf 'console  = %s (ignored on backend=spi)\n' "$console"
+    fi
+    if [[ "$backend" != framebuffer && "$hdmi_set" -eq 1 ]]; then
+        printf 'hdmi     = %s (ignored on backend=spi)\n' "$hdmi"
     fi
     printf 'source   = %s\n' "$([[ -f $CONF ]] && echo "$CONF" || echo 'defaults')"
 }
@@ -497,6 +730,13 @@ cmd_verify() {
     if [[ "$backend" == framebuffer ]]; then
         local ccw
         ccw="$(fbtft_rotate "$rotation")"
+        if want_pi4_hdmi_off; then
+            check "userconfig.txt has [pi4] hdmi_force_hotplug=0" \
+                "$(has_pi4_hdmi_off && echo y)"
+        else
+            check "userconfig.txt has no [pi4] hdmi_force_hotplug=0" \
+                "$(has_pi4_hdmi_off || echo y)"
+        fi
         check "userconfig.txt has dtoverlay=fbtft,spi0-0,st7789v" \
             "$(grep -qxF 'dtoverlay=fbtft,spi0-0,st7789v' "$USERCONFIG" 2>/dev/null && echo y)"
         check "userconfig.txt has dtparam=rotate=${ccw}" \
@@ -504,13 +744,18 @@ cmd_verify() {
     else
         check "userconfig.txt has no firmware-applied display overlay" \
             "$(grep -qE '^dtoverlay=(fbtft|mipi-dbi-spi)' "$USERCONFIG" 2>/dev/null || echo y)"
+        check "userconfig.txt has no hdmi_force_hotplug=" \
+            "$(grep -qE '^hdmi_force_hotplug=' "$USERCONFIG" 2>/dev/null || echo y)"
     fi
     if [[ -f "$CMDLINE" ]]; then
         if [[ "$backend" == framebuffer ]]; then
-            check "cmdline.txt has ${FBCON_MAP}" \
-                "$(grep -qwF "$FBCON_MAP" "$CMDLINE" 2>/dev/null && echo y)"
+            local map
             check "cmdline.txt has ${FBCON_FONT}" \
                 "$(grep -qwF "$FBCON_FONT" "$CMDLINE" 2>/dev/null && echo y)"
+            if map="$(fbcon_map_token)"; then
+                check "cmdline.txt has ${map}" \
+                    "$(grep -qwF "$map" "$CMDLINE" 2>/dev/null && echo y)"
+            fi
         else
             check "cmdline.txt has no fbcon=" \
                 "$(grep -qE '(^|[[:space:]])fbcon=' "$CMDLINE" 2>/dev/null || echo y)"
@@ -521,6 +766,13 @@ cmd_verify() {
         "$(grep -qxF "backend = \"${backend}\"" "$TOML" 2>/dev/null && echo y)"
     check "${TOML} matches rotation" \
         "$(grep -qxF "rotation = ${rotation}" "$TOML" 2>/dev/null && echo y)"
+    if [[ "$backend" == framebuffer ]]; then
+        local fb_dev
+        if fb_dev="$(panel_fb_dev)"; then
+            check "${TOML} matches fb_dev" \
+                "$(grep -qxF "fb_dev = \"${fb_dev}\"" "$TOML" 2>/dev/null && echo y)"
+        fi
+    fi
     check "unit installed" "$([[ -f ${UNIT_DIR}/${UNIT} ]] && echo y)"
     if [[ "$backend" == framebuffer && "$console" == release ]]; then
         check "unit unbinds fbcon while running" \
