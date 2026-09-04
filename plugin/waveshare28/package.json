@@ -1,0 +1,45 @@
+{
+  "name": "waveshare28",
+  "version": "1.0.0",
+  "description": "Settings UI for the Waveshare 2.8 inch SPI panel. Installs waveshare28-config from the plugin payload and scopes every control to the detected Raspberry Pi.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Just a Nerd",
+  "license": "MIT",
+  "volumio_info": {
+    "prettyName": "Waveshare 2.8 SPI Panel",
+    "icon": "fa-desktop",
+    "plugin_type": "system_controller",
+    "details": "Installs the Waveshare 2.8 inch SPI panel tool from the plugin payload and exposes only the settings that apply to this Raspberry Pi. armv6 boards (Pi 1, original Pi Zero) are not supported. Never edits volumioconfig.txt.",
+    "changelog": "Initial plugin: install the tool from payload, scope settings to the SBC, never edit volumioconfig.txt.",
+    "categories": [
+      "system_hardware"
+    ],
+    "keywords": [
+      "waveshare",
+      "display",
+      "touch",
+      "spi",
+      "raspberry pi"
+    ],
+    "os": [
+      "bookworm"
+    ],
+    "architectures": [
+      "armhf"
+    ],
+    "has_settings_page": true
+  },
+  "engines": {
+    "volumio": ">=4",
+    "node": ">=20"
+  },
+  "dependencies": {
+    "fs-extra": "^11.2.0",
+    "kew": "^0.7.0",
+    "v-conf": "^1.4.3"
+  },
+  "repository": "https://github.com/foonerd/rpi-waveshare28/tree/main/plugin/waveshare28"
+}

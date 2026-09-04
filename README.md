@@ -11,6 +11,7 @@ Standalone. Not part of any Volumio or evo release stream.
     kernel/     CST328 kernel module and device tree overlay
     runtime/    userspace renderer and touch reader, Rust
     scripts/    installer and configurator
+    plugin/     Volumio store plugin (wraps waveshare28-config)
     docs/       CONFIG.md, BOOT-FLOW.md, design notes
 
 They share nothing but the hardware. Different toolchains, different build
@@ -43,6 +44,7 @@ All of it is `waveshare28-config`. The full reference is
 [`docs/CONFIG.md`](docs/CONFIG.md).
 
     waveshare28-config show
+    waveshare28-config detect
     sudo waveshare28-config set rotation=270 backend=framebuffer console=release
     waveshare28-config verify
     sudo waveshare28-config recover

@@ -89,13 +89,28 @@ jobs:
             kernel/build-script/download_build.sh \
             kernel/build-script/re-build.sh \
             kernel/build-script/install_deps_gcc_11.sh
+          # Volumio runs plugin scripts as `sh script` (dash).
+          shellcheck -s dash \
+            plugin/waveshare28/install.sh \
+            plugin/waveshare28/uninstall.sh
+
+      - name: Plugin payload matches configurator
+        run: |
+          cmp -s scripts/waveshare28-config plugin/waveshare28/payload/waveshare28-config \
+            || { echo "plugin payload waveshare28-config is stale; copy scripts/waveshare28-config"; exit 1; }
+
+      - name: Plugin payload includes armhf renderer
+        run: |
+          bin=plugin/waveshare28/payload/bin/armhf/waveshare28-panel
+          test -f "$bin" || { echo "payload is missing $bin"; exit 1; }
+          (cd plugin/waveshare28/payload/bin/armhf && sha256sum -c waveshare28-panel.sha256)
 
       - name: Check executable bits
         # A script committed without its executable bit fails at the worst
         # possible moment, on someone else's machine.
         run: |
           fail=0
-          for f in scripts/install.sh kernel/build-script/*.sh; do
+          for f in scripts/install.sh plugin/waveshare28/install.sh plugin/waveshare28/uninstall.sh plugin/waveshare28/payload/waveshare28-config plugin/waveshare28/payload/bin/armhf/waveshare28-panel kernel/build-script/*.sh; do
             mode="$(git ls-files -s "$f" | awk '{print $1}')"
             if [ "$mode" != "100755" ]; then
               echo "not executable in git: $f (mode $mode)"
