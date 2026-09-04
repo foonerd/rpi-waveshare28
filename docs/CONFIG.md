@@ -12,6 +12,7 @@ you.
     sudo waveshare28-config apply
     waveshare28-config verify
     sudo waveshare28-config recover
+    sudo waveshare28-config purge
 
 `set`, `apply` and `recover` need root. `show`, `show --json`, `detect`
 and `verify` do not.
@@ -68,16 +69,22 @@ flowchart TD
   verify["verify: compare, no write"]
   set["set: write conf"]
   apply["apply: regenerate derived files"]
-  recover["recover: remove unit, keep conf"]
+  recover["recover: remove derived, keep conf"]
+  purge["purge: recover + delete conf"]
   set --> apply
   recover -.->|"apply reinstates"| apply
+  purge --> recover
 ```
 
 ### `show`
 
 Prints the loaded settings. No root. A missing durable file is not an
 error: defaults are used and `source` says so. `show --json` is the
-same data plus the `detect` object, for the plugin.
+same data plus the `detect` object, for the plugin. It also reports
+`device` (live `fb_st7789v` or SPI path) and `reboot_required`.
+`reboot_required` is true only for `backend=framebuffer` when
+`fb_st7789v` is not on this boot. A missing `/dev/spidev0.0` is not
+a reboot: Pi 5 names that bus `/dev/spidev10.0`.
 
 ### `detect`
 
@@ -125,15 +132,23 @@ names the missing tokens; `apply` puts them back.
 
 ### `recover`
 
-Disables and removes the panel unit (and a leftover splash unit from an
-earlier design). Rebinds fbcon if it was released. Does **not** touch
-`/boot/waveshare28.conf`.
+Inverse of `apply`, except `/boot/waveshare28.conf` is kept. Stops and
+removes the panel unit (and a leftover splash unit), rebinds fbcon,
+deletes `/etc/waveshare28-panel.toml`, strips the plugin's
+`userconfig.txt` lines (`spi`, `cst328`, fbtft, HDMI-off), and removes
+`fbcon=` from `cmdline.txt`. It does **not** remove a Pi 3A+ KMS
+backstop: that block is boot-safety, not a panel overlay.
 
-For the case where the device still boots but the panel service is
-misbehaving. `sudo waveshare28-config apply` reinstates.
+`sudo waveshare28-config apply` reinstates from the durable file.
 
 If the device would not boot, the units live on the data partition under
 `/dyn/etc/systemd/` and can be removed with the card in a reader.
+
+### `purge`
+
+`recover`, then deletes `/boot/waveshare28.conf`. The next `apply` uses
+defaults. Use this for a clean test, not for a store uninstall (that
+keeps the durable file).
 
 ---
 
@@ -415,8 +430,9 @@ After a kernel OTA that has dropped `fbcon=`:
     waveshare28-config verify
     sudo waveshare28-config apply
 
-After a factory reset, re-run the installer. It calls `apply`, which
-reads the surviving `/boot/waveshare28.conf`.
+After a factory reset, `/boot/waveshare28.conf` survives. The online
+installer (`scripts/install.sh runtime`) calls `apply` itself. The
+plugin installer does not: enable (`onStart`) calls `apply`.
 
 ---
 
@@ -426,8 +442,10 @@ reads the surviving `/boot/waveshare28.conf`.
 `system_hardware`, armhf, Bookworm).
 `install.sh` copies `payload/waveshare28-config` and
 `payload/bin/armhf/waveshare28-panel` (runtime-v1.1.1 musleabihf) into
-`/usr/local/bin`. Enabling the plugin with the tool missing runs that
-installer again; it does not sit disabled waiting for a manual curl.
+`/usr/local/bin` and writes sudoers. It does not run `apply` and does
+not start the panel unit. Enabling the plugin (`onStart`) runs `apply`.
+Disabling it (`onStop`) runs `recover`. Enabling with the tool missing
+runs the installer again, then `apply`.
 
 `onStart` still refuses **armv6**. Other boards get only the controls
 that `detect` says apply:
@@ -439,12 +457,19 @@ that `detect` says apply:
 | hdmi | Pi 4 family and `backend=framebuffer` |
 | 3A+ KMS | read-only status on 3A+ only |
 | board / revision | read-only on every supported Pi |
+| panel device | read-only: live path, or "Reboot required" |
 
-Save calls `waveshare28-config set`. A change that needs a firmware
-overlay (backend, framebuffer rotation/speed, HDMI) opens the Soloist
-15-second reboot modal: Restart now or Cancel and reboot later.
-`console=` only rewrites the unit and does not reboot. Disabling the
-plugin calls `recover` and keeps `/boot/waveshare28.conf`.
+Save calls `waveshare28-config set`. The reboot modal opens only when
+a firmware overlay is not live: a backend / framebuffer rotation /
+speed / HDMI change, or `show --json` `reboot_required` after `apply`
+(`backend=framebuffer` and `fb_st7789v` missing). That second case is
+a factory reset or a re-apply of the same framebuffer keys:
+`/boot/waveshare28.conf` already matches, so comparing keys alone
+would only toast "Settings applied." Enable (`onStart`) runs `apply`
+and offers a reboot only when `reboot_required` is true (framebuffer
+overlay not live). Default `backend=spi` does not reboot. `console=`
+only rewrites the unit. Disabling the plugin calls `recover` and keeps
+`/boot/waveshare28.conf`.
 
 Named settings backups (Soloist-style) live in
 `/data/INTERNAL/waveshare28/backups`. Create, restore and delete are

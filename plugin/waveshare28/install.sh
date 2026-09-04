@@ -1,6 +1,8 @@
 #!/bin/sh
 #
-# Install the Waveshare 2.8 tool from this plugin's payload, then apply.
+# Install the Waveshare 2.8 tool from this plugin's payload.
+# Files only: binaries and sudoers. Do not apply, start, or enable the
+# panel unit. That happens when the user enables the plugin (onStart).
 # Same shape as peppy_screensaver: the plugin directory carries the
 # binaries; this script puts them on the system. Volumio's plugin
 # installer packages the directory. It does not edit volumioconfig.txt.
@@ -107,9 +109,6 @@ if ! visudo -c -f "$SUDOERS_FILE"; then
     rm -f "$SUDOERS_FILE"
     die "invalid sudoers syntax"
 fi
-
-log "applying configuration"
-"${BIN_DIR}/waveshare28-config" apply
 
 echo "Waveshare 2.8 SPI Panel plugin installed"
 echo "plugininstallend"

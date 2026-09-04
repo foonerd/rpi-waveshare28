@@ -11,6 +11,7 @@
 #   sudo waveshare28-config apply
 #   waveshare28-config verify
 #   sudo waveshare28-config recover
+#   sudo waveshare28-config purge
 #
 # Operator reference: docs/CONFIG.md
 #
@@ -801,12 +802,14 @@ enable_safely() {
     if ! dev="$(backend_device)" || [[ ! -e "$dev" ]]; then
         if [[ "$backend" == framebuffer ]]; then
             log "${PANEL_FB_NAME} is not present; backend=framebuffer applies on the next boot"
+            systemctl stop "$UNIT" >/dev/null 2>&1 || true
+            systemctl enable "$UNIT" >/dev/null
+            log "unit enabled. Reboot for the overlay to load, then the panel starts."
         else
-            log "${dev:-/dev/spidev0.0} is not present; backend=${backend} applies on the next boot"
+            log "${dev:-/dev/spidev0.0} is not present; not starting the unit"
+            systemctl stop "$UNIT" >/dev/null 2>&1 || true
+            systemctl enable "$UNIT" >/dev/null
         fi
-        systemctl stop "$UNIT" >/dev/null 2>&1 || true
-        systemctl enable "$UNIT" >/dev/null
-        log "unit enabled. Reboot for the backend device to appear, then the panel starts."
         return 0
     fi
 
@@ -900,9 +903,8 @@ cmd_apply() {
     if [[ "$backend" == framebuffer ]]; then
         log "rotation=${rotation} clockwise is dtparam=rotate=$(fbtft_rotate "$rotation")."
     fi
-    local dev
-    if ! dev="$(backend_device)" || [[ ! -e "$dev" ]]; then
-        log "reboot required: backend device is not on this boot."
+    if [[ "$backend" == framebuffer ]] && ! panel_fb_dev >/dev/null; then
+        log "reboot required: ${PANEL_FB_NAME} is not on this boot."
     fi
 }
 
@@ -938,7 +940,7 @@ cmd_detect() {
 
 cmd_show_json() {
     load_conf
-    local source
+    local source dev
     source="$([[ -f $CONF ]] && echo "$CONF" || echo 'defaults')"
     printf '{'
     printf '"rotation":%s,' "$rotation"
@@ -949,6 +951,24 @@ cmd_show_json() {
     printf '"console_set":%s,' "$(json_bool "$console_set")"
     printf '"hdmi_set":%s,' "$(json_bool "$hdmi_set")"
     printf '"source":%s,' "$(json_str "$source")"
+    # Reboot is for a firmware overlay that is not visible yet.
+    # backend=spi does not need one: a missing /dev/spidev0.0 is not
+    # a reboot (Pi 5 exposes the same bus as /dev/spidev10.0).
+    if [[ "$backend" == framebuffer ]]; then
+        if dev="$(panel_fb_dev)"; then
+            printf '"device":%s,' "$(json_str "$dev")"
+            printf '"reboot_required":false,'
+        else
+            printf '"device":null,'
+            printf '"reboot_required":true,'
+        fi
+    elif dev="$(backend_device)" && [[ -e "$dev" ]]; then
+        printf '"device":%s,' "$(json_str "$dev")"
+        printf '"reboot_required":false,'
+    else
+        printf '"device":null,'
+        printf '"reboot_required":false,'
+    fi
     printf '"board":'
     emit_detect_json | tr -d '\n'
     printf '}\n'
@@ -1122,11 +1142,30 @@ cmd_verify() {
     log "no drift"
 }
 
-# Undo everything that could keep the device from booting cleanly, for the
-# case where it still boots but the panel service is misbehaving.
-#
-# Deliberately does not touch /boot/waveshare28.conf: the settings should
-# survive so a later 'apply' restores them.
+# Derived files apply writes. Inverse of apply minus the durable conf.
+remove_derived() {
+    if [[ -f "$USERCONFIG" ]]; then
+        remove_lines '^dtoverlay=(fbtft|mipi-dbi-spi)'
+        remove_lines '^dtoverlay=cst328$'
+        remove_lines '^dtparam=spi=on$'
+        remove_lines '^dtparam=(width|height|reset_pin|dc_pin|led_pin|rotate)='
+        remove_hdmi_off
+        # The 3A+ KMS block is a boot-safety backstop, not a panel
+        # overlay. Removing it on recover can fail the next boot on
+        # 512 MB 3A+ boards while volumioconfig.txt still has [pi3]
+        # full KMS. Other boards: drop a leftover copied card.
+        if ! is_pi3a_plus; then
+            remove_3a_kms_backstop
+        fi
+    fi
+    if [[ -f "$CMDLINE" ]]; then
+        write_cmdline "$(strip_fbcon "$(read_cmdline)")"
+    fi
+    rm -f "$TOML"
+}
+
+# Undo everything apply derived. The unit, overlays, fbcon tokens, toml.
+# Keeps /boot/waveshare28.conf so a later apply restores the same keys.
 cmd_recover() {
     require_root
 
@@ -1140,9 +1179,20 @@ cmd_recover() {
     rm -f "${UNIT_DIR}/waveshare28-splash.service"
     systemctl daemon-reload
 
+    log "removing derived boot and runtime files"
+    remove_derived
+
     log "recovered. ${CONF} kept; run 'sudo waveshare28-config apply' to reinstate."
     log "If the device would not boot, the units live on the data partition"
     log "under /dyn/etc/systemd/ and can be removed with the card in a reader."
+}
+
+# recover plus the durable file. A later install starts from defaults.
+cmd_purge() {
+    require_root
+    cmd_recover
+    rm -f "$CONF"
+    log "purged ${CONF}"
 }
 
 main() {
@@ -1156,10 +1206,11 @@ main() {
         apply)   cmd_apply ;;
         verify)  cmd_verify ;;
         recover) cmd_recover ;;
+        purge)   cmd_purge ;;
         # Privileged helpers for the unit. Not part of the operator UI.
         console-release) require_root; fbcon_bind 0 ;;
         console-share)   require_root; fbcon_bind 1 ;;
-        *)       die "usage: $0 [show|show --json|detect|set key=value...|apply|verify|recover]" ;;
+        *)       die "usage: $0 [show|show --json|detect|set key=value...|apply|verify|recover|purge]" ;;
     esac
 }
 
