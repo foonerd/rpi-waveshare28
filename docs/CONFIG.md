@@ -285,6 +285,28 @@ The HDMI stanza is written only when this board is Pi 4 family,
 lines are not trapped inside `[pi4]`. `hdmi=on`, `backend=spi`, or any
 other board removes the stanza.
 
+`apply` never edits `volumioconfig.txt`. On a Pi 3A+ it reads this
+board's revision from `/proc/cpuinfo` and inspects `volumioconfig.txt`
+for that scope only (`[0x9020e0]`, `[0x9020e1]`, or a later 3A+
+revision). Volumio 4.119 ships `[pi3] dtoverlay=vc4-kms-v3d` only; that
+full-KMS line does not boot 512 MB 3A+ boards. The durable fix is an
+image update. Until this board's scope is there, `apply` writes it
+into a marked `userconfig.txt` block:
+
+    # waveshare28-3a-kms-begin
+    [0x9020e1]
+    dtoverlay=vc4-kms-v3d,cma-128
+    [all]
+    # waveshare28-3a-kms-end
+
+Pi 4, Pi 5, and other Pi 3 boards are left alone; a leftover block
+from a card moved off a 3A+ is removed. A scope already present in
+`volumioconfig.txt`, or already present elsewhere in `userconfig.txt`,
+is not copied. After an OTA that adds the filter, the next `apply`
+removes the marked block. This cannot unbrick a 3A+ that never reaches
+userspace; first boot still needs the image fix or a one-time
+`userconfig.txt` edit with the card in a reader.
+
 and two tokens on `cmdline.txt` once the panel node is visible:
 
     fbcon=map:<N> fbcon=font:VGA8x16
