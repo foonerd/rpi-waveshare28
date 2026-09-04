@@ -426,9 +426,8 @@ reads the surviving `/boot/waveshare28.conf`.
 `system_hardware`, armhf, Bookworm).
 `install.sh` copies `payload/waveshare28-config` and
 `payload/bin/armhf/waveshare28-panel` (runtime-v1.1.1 musleabihf) into
-`/usr/local/bin`. The store zip is self-contained on Volumio 4 armhf.
-Enabling the plugin with the tool missing runs that installer again; it
-does not sit disabled waiting for a manual curl.
+`/usr/local/bin`. Enabling the plugin with the tool missing runs that
+installer again; it does not sit disabled waiting for a manual curl.
 
 `onStart` still refuses **armv6**. Other boards get only the controls
 that `detect` says apply:

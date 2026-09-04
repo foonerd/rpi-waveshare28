@@ -1,8 +1,9 @@
 #!/bin/sh
 #
 # Install the Waveshare 2.8 tool from this plugin's payload, then apply.
-# Same shape as peppy_screensaver: the zip carries the binaries; this
-# script puts them on the system. It does not edit volumioconfig.txt.
+# Same shape as peppy_screensaver: the plugin directory carries the
+# binaries; this script puts them on the system. Volumio's plugin
+# installer packages the directory. It does not edit volumioconfig.txt.
 #
 # Volumio invokes this as `sh install.sh` (dash). No bashisms.
 
