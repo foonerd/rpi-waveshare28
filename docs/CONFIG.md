@@ -6,12 +6,19 @@ by hand: `apply` regenerates them from the durable file and will overwrite
 you.
 
     waveshare28-config show
+    waveshare28-config show --json
+    waveshare28-config detect
     sudo waveshare28-config set rotation=270 backend=framebuffer console=release
     sudo waveshare28-config apply
     waveshare28-config verify
     sudo waveshare28-config recover
 
-`set`, `apply` and `recover` need root. `show` and `verify` do not.
+`set`, `apply` and `recover` need root. `show`, `show --json`, `detect`
+and `verify` do not.
+
+The Volumio plugin in `plugin/waveshare28` is a settings UI on top of
+this tool. It installs the configurator and renderer from its payload
+(the peppy_screensaver pattern). It never edits `volumioconfig.txt`.
 
 ---
 
@@ -57,6 +64,7 @@ managed and an OTA overwrites them.
 ```mermaid
 flowchart TD
   show["show: print, no write"]
+  detect["detect: JSON board + param flags"]
   verify["verify: compare, no write"]
   set["set: write conf"]
   apply["apply: regenerate derived files"]
@@ -68,7 +76,16 @@ flowchart TD
 ### `show`
 
 Prints the loaded settings. No root. A missing durable file is not an
-error: defaults are used and `source` says so.
+error: defaults are used and `source` says so. `show --json` is the
+same data plus the `detect` object, for the plugin.
+
+### `detect`
+
+No root. Prints JSON: family, model, revision, whether this board is
+supported, and which durable keys apply. armv6 (Pi 1, original Pi Zero,
+CM1) is `supported: false`. Every other Pi family is detected (`pi02`,
+`pi2`, `pi3`, `pi3a+`, `pi4`, `pi5`). `hdmi` is true only on the Pi 4
+family. 3A+ KMS is a status string, not a switch.
 
 ### `set key=value...`
 
@@ -99,8 +116,9 @@ differs. Usable from a health check. It does not change anything.
 
 Checks include: SPI and touch overlays, fbtft lines or their absence,
 `fbcon=` tokens, the generated toml, the unit (including whether it
-unbinds fbcon), that the unit is enabled, that the binary is present, and
-that a touch module exists for the running kernel.
+unbinds fbcon), that the unit is enabled, and that the binary is present.
+It does not look for the CST328 kernel module: that is a separate
+`install.sh kernel` artefact, not something `runtime` or `apply` installs.
 
 A kernel OTA replaces `cmdline.txt`. Not every update does. `verify`
 names the missing tokens; `apply` puts them back.
@@ -399,6 +417,44 @@ After a kernel OTA that has dropped `fbcon=`:
 
 After a factory reset, re-run the installer. It calls `apply`, which
 reads the surviving `/boot/waveshare28.conf`.
+
+---
+
+## Volumio plugin
+
+`plugin/waveshare28` is store-shaped (`system_controller`, category
+`system_hardware`, armhf, Bookworm).
+`install.sh` copies `payload/waveshare28-config` and
+`payload/bin/armhf/waveshare28-panel` (runtime-v1.1.1 musleabihf) into
+`/usr/local/bin`. The store zip is self-contained on Volumio 4 armhf.
+Enabling the plugin with the tool missing runs that installer again; it
+does not sit disabled waiting for a manual curl.
+
+`onStart` still refuses **armv6**. Other boards get only the controls
+that `detect` says apply:
+
+| Control | Who sees it |
+|---|---|
+| rotation, speed, backend | all supported Pi |
+| console | `backend=framebuffer` |
+| hdmi | Pi 4 family and `backend=framebuffer` |
+| 3A+ KMS | read-only status on 3A+ only |
+| board / revision | read-only on every supported Pi |
+
+Save calls `waveshare28-config set`. A change that needs a firmware
+overlay (backend, framebuffer rotation/speed, HDMI) opens the Soloist
+15-second reboot modal: Restart now or Cancel and reboot later.
+`console=` only rewrites the unit and does not reboot. Disabling the
+plugin calls `recover` and keeps `/boot/waveshare28.conf`.
+
+Named settings backups (Soloist-style) live in
+`/data/INTERNAL/waveshare28/backups`. Create, restore and delete are
+on the plugin page. Restore runs the same `set` checks as Apply. Those
+files survive plugin uninstall; they do not survive a factory reset.
+`/boot/waveshare28.conf` is still the durable live copy.
+
+Sudoers is `/etc/sudoers.d/volumio-waveshare28` (`volumio-<plugin_name>`).
+The `volumio` user may run `/usr/local/bin/waveshare28-config` only.
 
 ---
 
