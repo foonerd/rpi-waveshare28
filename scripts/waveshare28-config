@@ -67,12 +67,23 @@
 # Other boards ignore hdmi=. The [pi4] filter is a second gate so a
 # copied userconfig cannot turn off HDMI on a Pi 5. backend=spi removes
 # the stanza.
+#
+# Volumio 4.119 volumioconfig.txt has no Pi 3A+ KMS filter. [pi3] full
+# KMS fails to boot 512 MB 3A+ boards. The image fix belongs in
+# volumio-os. Until that ships, apply on a 3A+ writes this board's
+# revision filter to userconfig.txt only if that scope is absent from
+# volumioconfig.txt. Other SBCs get nothing and any leftover block is
+# removed. When an OTA adds the scope, the next apply drops our block.
 
 set -euo pipefail
 
 CONF="/boot/waveshare28.conf"
 USERCONFIG="/boot/userconfig.txt"
+VOLUMIOCONFIG="/boot/volumioconfig.txt"
 CMDLINE="/boot/cmdline.txt"
+KMS_3A_BEGIN="# waveshare28-3a-kms-begin"
+KMS_3A_END="# waveshare28-3a-kms-end"
+KMS_3A_OVERLAY="dtoverlay=vc4-kms-v3d,cma-128"
 TOML="/etc/waveshare28-panel.toml"
 PANEL_FB_NAME="fb_st7789v"
 FBCON_FONT="fbcon=font:VGA8x16"
@@ -137,11 +148,35 @@ is_pi4_family() {
     return 1
 }
 
+# Pi 3A+ only. Other Pi 3 boards have enough RAM for [pi3] full KMS.
+is_pi3a_plus() {
+    local compat model
+    compat="$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null || true)"
+    case "$compat" in
+        *3-model-a-plus*) return 0 ;;
+    esac
+    model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+    case "$model" in
+        *'Pi 3 Model A Plus'*|*'Pi 3A+'*) return 0 ;;
+    esac
+    return 1
+}
+
+# Firmware revision tag, warranty bit stripped. Empty if unreadable.
+board_revision() {
+    local raw
+    raw="$(awk -F: '/^Revision/ { gsub(/[[:space:]]/, "", $2); print tolower($2) }' /proc/cpuinfo 2>/dev/null || true)"
+    raw="${raw#0x}"
+    [[ "$raw" =~ ^[0-9a-f]+$ ]] || return 1
+    printf '0x%x' "$((16#$raw & 0xffffff))"
+}
+
 # Short board label for show. Detection is compatible first, then model.
 detect_pi() {
     local compat model
     compat="$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null || true)"
     case "$compat" in
+        *3-model-a-plus*) printf 'pi3a+'; return 0 ;;
         *bcm2712*) printf 'pi5'; return 0 ;;
         *bcm2711*) printf 'pi4'; return 0 ;;
         *bcm2837*|*bcm2710*) printf 'pi3'; return 0 ;;
@@ -150,6 +185,7 @@ detect_pi() {
     esac
     model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
     case "$model" in
+        *'Pi 3 Model A Plus'*|*'Pi 3A+'*) printf 'pi3a+' ;;
         *'Pi 5'*|*'Compute Module 5'*) printf 'pi5' ;;
         *'Compute Module 4'*|*'Pi 400'*|*'Pi 4'*) printf 'pi4' ;;
         *'Pi 3'*) printf 'pi3' ;;
@@ -349,6 +385,112 @@ ensure_pi4_hdmi_off() {
     } > "$tmp"
     cat "$tmp" > "$USERCONFIG"
     rm -f "$tmp"
+}
+
+# Firmware section header, e.g. [0x9020e0].
+config_has_section() {
+    local tag="$1" file="$2"
+    [[ -f "$file" ]] || return 1
+    grep -qiE "^\\[${tag}\\][[:space:]]*$" "$file"
+}
+
+volumioconfig_has_section() {
+    config_has_section "$1" "$VOLUMIOCONFIG"
+}
+
+require_3a_kms_markers() {
+    [[ -f "$USERCONFIG" ]] || return 0
+    if grep -qF "$KMS_3A_BEGIN" "$USERCONFIG" && ! grep -qF "$KMS_3A_END" "$USERCONFIG"; then
+        die "${USERCONFIG} has ${KMS_3A_BEGIN} without ${KMS_3A_END}"
+    fi
+}
+
+userconfig_without_3a_backstop() {
+    [[ -f "$USERCONFIG" ]] || return 0
+    awk -v b="$KMS_3A_BEGIN" -v e="$KMS_3A_END" '
+        $0 == b { skip = 1; next }
+        skip && $0 == e { skip = 0; next }
+        skip { next }
+        { print }
+    ' "$USERCONFIG"
+}
+
+# This 3A+'s revision, only when volumioconfig.txt does not already
+# have that scope. Empty on every other board.
+missing_3a_kms_rev() {
+    local rev
+    is_pi3a_plus || return 0
+    rev="$(board_revision)" || return 0
+    volumioconfig_has_section "$rev" || printf '%s\n' "$rev"
+}
+
+# Scope we still need to write on this 3A+: missing from
+# volumioconfig.txt and not already in the rest of userconfig.txt.
+needed_3a_kms_rev() {
+    local rev rest
+    is_pi3a_plus || return 0
+    rev="$(board_revision)" || return 0
+    volumioconfig_has_section "$rev" && return 0
+    rest="$(userconfig_without_3a_backstop)"
+    printf '%s\n' "$rest" | grep -qiE "^\\[${rev}\\][[:space:]]*$" && return 0
+    printf '%s\n' "$rev"
+}
+
+remove_3a_kms_backstop() {
+    [[ -f "$USERCONFIG" ]] || return 0
+    require_3a_kms_markers
+    grep -qF "$KMS_3A_BEGIN" "$USERCONFIG" || return 0
+    local tmp
+    tmp="$(mktemp)"
+    userconfig_without_3a_backstop > "$tmp"
+    log "removing from userconfig.txt: 3A+ KMS backstop"
+    cat "$tmp" > "$USERCONFIG"
+    rm -f "$tmp"
+}
+
+# On a 3A+, write this board's revision filter only when
+# volumioconfig.txt (and the rest of userconfig.txt) do not already
+# have it. Other SBCs: remove any leftover block, write nothing.
+sync_3a_kms_backstop() {
+    [[ -f "$USERCONFIG" ]] || die "${USERCONFIG} not found; is this a Volumio Pi image?"
+    require_3a_kms_markers
+    local needed tmp desired current
+    if ! is_pi3a_plus; then
+        remove_3a_kms_backstop
+        return 0
+    fi
+    if ! board_revision >/dev/null; then
+        warn "Pi 3A+ detected but /proc/cpuinfo Revision is unreadable; not writing a KMS backstop"
+        remove_3a_kms_backstop
+        return 0
+    fi
+    needed="$(needed_3a_kms_rev)"
+    if [[ -z "$needed" ]]; then
+        remove_3a_kms_backstop
+        return 0
+    fi
+
+    desired="$(
+        printf '%s\n' "$KMS_3A_BEGIN" "[${needed}]" "$KMS_3A_OVERLAY" '[all]' "$KMS_3A_END"
+    )"
+    current="$(awk -v b="$KMS_3A_BEGIN" -v e="$KMS_3A_END" '
+        $0 == b { p = 1 }
+        p { print }
+        $0 == e { p = 0 }
+    ' "$USERCONFIG" 2>/dev/null || true)"
+    if [[ "$current" == "$desired" ]]; then
+        return 0
+    fi
+
+    remove_3a_kms_backstop
+    tmp="$(mktemp)"
+    {
+        cat "$USERCONFIG"
+        printf '%s\n' "$desired"
+    } > "$tmp"
+    cat "$tmp" > "$USERCONFIG"
+    rm -f "$tmp"
+    log "userconfig.txt: 3A+ KMS backstop for ${needed} (absent from volumioconfig.txt)"
 }
 
 remove_lines() {
@@ -614,6 +756,8 @@ cmd_apply() {
         remove_hdmi_off
     fi
 
+    sync_3a_kms_backstop
+
     apply_fbcon
 
     write_toml
@@ -688,7 +832,6 @@ cmd_show() {
         else
             printf 'fbcon    = %s (map deferred until %s)\n' "$FBCON_FONT" "$PANEL_FB_NAME"
         fi
-        printf 'board    = %s\n' "$(detect_pi)"
         if want_pi4_hdmi_off; then
             printf 'hdmi     = off ([pi4] force_hotplug=0)\n'
         elif [[ "$hdmi" == on ]]; then
@@ -702,6 +845,26 @@ cmd_show() {
     fi
     if [[ "$backend" != framebuffer && "$hdmi_set" -eq 1 ]]; then
         printf 'hdmi     = %s (ignored on backend=spi)\n' "$hdmi"
+    fi
+    local board rev kms_missing kms_needed
+    board="$(detect_pi)"
+    if rev="$(board_revision)"; then
+        printf 'board    = %s (%s)\n' "$board" "$rev"
+    else
+        printf 'board    = %s\n' "$board"
+    fi
+    if ! is_pi3a_plus; then
+        printf '3A+ KMS  = n/a on %s\n' "$board"
+    else
+        kms_missing="$(missing_3a_kms_rev)"
+        kms_needed="$(needed_3a_kms_rev)"
+        if [[ -z "$kms_missing" ]]; then
+            printf '3A+ KMS  = present in volumioconfig.txt\n'
+        elif [[ -z "$kms_needed" ]]; then
+            printf '3A+ KMS  = %s already in userconfig.txt\n' "$kms_missing"
+        else
+            printf '3A+ KMS  = userconfig backstop for %s\n' "$kms_needed"
+        fi
     fi
     printf 'source   = %s\n' "$([[ -f $CONF ]] && echo "$CONF" || echo 'defaults')"
 }
@@ -723,6 +886,28 @@ cmd_verify() {
 
     log "verifying against ${CONF}"
 
+    if ! is_pi3a_plus; then
+        check "userconfig.txt has no 3A+ KMS backstop" \
+            "$(grep -qF "$KMS_3A_BEGIN" "$USERCONFIG" 2>/dev/null || echo y)"
+    else
+        local rev
+        if rev="$(board_revision)"; then
+            if volumioconfig_has_section "$rev"; then
+                check "volumioconfig.txt has [${rev}] (no waveshare28 copy)" \
+                    "$(awk -v b="$KMS_3A_BEGIN" -v e="$KMS_3A_END" -v r="[${rev}]" '
+                        $0 == b { p = 1; next }
+                        $0 == e { p = 0; next }
+                        p && tolower($0) == tolower(r) { found = 1 }
+                        END { exit found }
+                    ' "$USERCONFIG" 2>/dev/null && echo y)"
+            else
+                check "userconfig.txt has this 3A+ [${rev}]" \
+                    "$(grep -qiE "^\\[${rev}\\][[:space:]]*$" "$USERCONFIG" 2>/dev/null && echo y)"
+            fi
+        else
+            check "3A+ revision is readable" ""
+        fi
+    fi
     check "userconfig.txt has dtparam=spi=on" \
         "$(grep -qxF 'dtparam=spi=on' "$USERCONFIG" 2>/dev/null && echo y)"
     check "userconfig.txt has dtoverlay=cst328" \
