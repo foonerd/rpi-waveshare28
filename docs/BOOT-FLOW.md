@@ -322,12 +322,12 @@ screen has no touch targets, so nothing further is needed.
 
 Both resolved. The splash unit that applied fbtft after Plymouth started is
 not kept. Firmware-applied fbtft in `userconfig.txt` is the path that puts
-`/dev/fb1` in front of Plymouth. The renderer then uses `backend=framebuffer`
-and draws into that device after `plymouth-quit`.
+the `fb_st7789v` node in front of Plymouth. The renderer then uses
+`backend=framebuffer` and draws into that device after `plymouth-quit`.
 
 `console=release` unbinds fbcon from that framebuffer while the unit runs,
-so kernel text on TTY1 cannot overwrite the player. `fbcon=map:1` stays on
-the cmdline; stop the unit and the QR comes back.
+so kernel text on TTY1 cannot overwrite the player. `fbcon=map:N` for the
+live panel node stays on the cmdline; stop the unit and the QR comes back.
 
 Still open, and outside this repository: whether an initramfs hook could
 apply the overlay, let Plymouth run, and remove it so the SPI backend could

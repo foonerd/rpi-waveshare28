@@ -18,9 +18,9 @@ systems, different outputs. Each has its own README and builds on its own.
 
 The SPI backend and an fbtft overlay cannot share spi0 cs0. A firmware-applied
 overlay in `userconfig.txt` cannot be removed later, which is why Plymouth
-can bind `/dev/fb1` in the initramfs. `backend=framebuffer` draws into that
-device after `plymouth-quit`. `backend=spi` owns the bus and the configurator
-strips the fbtft lines.
+can bind the `fb_st7789v` framebuffer in the initramfs. `backend=framebuffer`
+draws into that device after `plymouth-quit`. `backend=spi` owns the bus and
+the configurator strips the fbtft lines.
 
     make validate   fmt, clippy and tests for the runtime, no build
     make runtime    validate then cross-build the renderer
@@ -61,12 +61,14 @@ The renderer starts early and does not wait for `volumio.service`. Without
 that the panel is dark for most of a minute, and the address is the one thing
 someone needs before the player is reachable.
 
-Plymouth on this panel needs fbtft in `userconfig.txt` so `/dev/fb1` exists
-before the initramfs hook starts `plymouthd`. That overlay owns the SPI bus
-for the life of the boot. `backend=framebuffer` is the renderer path that
-shares it: the process mmaps `/dev/fb1` after `plymouth-quit` and does not
-open `/dev/spidev0.0`. `backend=spi` is the original path and removes the
-fbtft lines. See `docs/BOOT-FLOW.md`.
+Plymouth on this panel needs fbtft in `userconfig.txt` so `fb_st7789v`
+exists before the initramfs hook starts `plymouthd`. That overlay owns the
+SPI bus for the life of the boot. `backend=framebuffer` is the renderer
+path that shares it: the process mmaps that node after `plymouth-quit` and
+does not open `/dev/spidev0.0`. The node is found by sysfs name, because
+HDMI or the firmware KMS framebuffer can already occupy `/dev/fb0`.
+`backend=spi` is the original path and removes the fbtft lines. See
+`docs/BOOT-FLOW.md`.
 
 ## Releases
 

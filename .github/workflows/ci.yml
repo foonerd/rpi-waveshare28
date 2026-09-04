@@ -85,6 +85,7 @@ jobs:
         run: |
           shellcheck \
             scripts/install.sh \
+            scripts/waveshare28-config \
             kernel/build-script/download_build.sh \
             kernel/build-script/re-build.sh \
             kernel/build-script/install_deps_gcc_11.sh
