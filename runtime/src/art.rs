@@ -9,13 +9,18 @@
 //! generates a URL per track, and the useful behaviour is to render the one
 //! the user settled on rather than to queue and decode every cover they passed
 //! through.
+//!
+//! The pending key is the `albumart` string from getState, not the encoded
+//! request-target. A failed fetch used to lock that string forever, so a
+//! webradio thumb that 404'd before the cache filled never appeared. Failure
+//! now retries on a backoff; a successful cover is still fetched once.
 
 use anyhow::{Context, Result};
 use embedded_graphics::pixelcolor::Rgb565;
 use image::imageops::FilterType;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::http;
 
@@ -36,9 +41,76 @@ pub struct Art {
 pub struct ArtLoader {
     tx: Sender<String>,
     rx: Receiver<Option<Art>>,
-    /// The URL most recently asked for, to avoid refetching the same cover
-    /// every time the scene is redrawn.
+    gate: FetchGate,
+}
+
+/// Dedupes and retries fetches for the current getState `albumart` string.
+///
+/// Neighbours that must not move: a playing cover is not refetched every
+/// tick (that was a TLS handshake storm); a new string is sent immediately;
+/// skip-through still drains on the worker, not here.
+struct FetchGate {
     pending: Option<String>,
+    in_flight: bool,
+    failed: bool,
+    failures: u32,
+    next_retry: Option<Instant>,
+}
+
+impl FetchGate {
+    fn new() -> Self {
+        Self {
+            pending: None,
+            in_flight: false,
+            failed: false,
+            failures: 0,
+            next_retry: None,
+        }
+    }
+
+    /// True when the worker should be asked for `path`.
+    fn should_send(&mut self, path: &str, now: Instant) -> bool {
+        if self.pending.as_deref() == Some(path) {
+            if self.failed && !self.in_flight && self.next_retry.is_some_and(|t| now >= t) {
+                self.in_flight = true;
+                return true;
+            }
+            return false;
+        }
+        self.pending = Some(path.to_string());
+        self.in_flight = true;
+        self.failed = false;
+        self.failures = 0;
+        self.next_retry = None;
+        true
+    }
+
+    fn completed(&mut self, ok: bool, now: Instant) {
+        self.in_flight = false;
+        if ok {
+            self.failed = false;
+            self.failures = 0;
+            self.next_retry = None;
+        } else {
+            self.failed = true;
+            self.failures = self.failures.saturating_add(1);
+            self.next_retry = Some(now + retry_delay(self.failures));
+        }
+    }
+}
+
+/// Delay before the next attempt of a failed URL.
+///
+/// First miss is often a webradio cache that has not been written yet.
+/// After that the interval opens so a permanent 404 is not a handshake
+/// every poll. The cap stays live for the rest of the station: some
+/// streams publish art minutes in.
+fn retry_delay(failures: u32) -> Duration {
+    match failures {
+        0 | 1 => Duration::from_secs(2),
+        2 => Duration::from_secs(8),
+        _ => Duration::from_secs(30),
+    }
 }
 
 impl ArtLoader {
@@ -58,27 +130,34 @@ impl ArtLoader {
         Ok(Self {
             tx: req_tx,
             rx: res_rx,
-            pending: None,
+            gate: FetchGate::new(),
         })
     }
 
-    /// Ask for a cover, unless it is the one already requested.
+    /// Ask for a cover, unless it is already in flight or freshly failed.
     pub fn request(&mut self, path: &str) {
-        if self.pending.as_deref() == Some(path) {
-            return;
+        if self.gate.should_send(path, Instant::now()) {
+            let _ = self.tx.send(path.to_string());
         }
-        self.pending = Some(path.to_string());
-        let _ = self.tx.send(path.to_string());
     }
 
     /// Collect a decoded cover if one is ready. Never blocks.
     ///
     /// `Some(None)` means the fetch or decode failed and the caller should
     /// clear whatever it was showing, rather than leaving the previous track's
-    /// cover under the new track's title.
-    pub fn poll(&self) -> Option<Option<Art>> {
+    /// cover under the new track's title. The same URL will be asked again
+    /// after a backoff.
+    pub fn poll(&mut self) -> Option<Option<Art>> {
         match self.rx.try_recv() {
-            Ok(art) => Some(art),
+            Ok(art) => {
+                self.gate.completed(art.is_some(), Instant::now());
+                if art.is_none() && self.gate.failures == 1 {
+                    if let Some(url) = self.gate.pending.as_deref() {
+                        tracing::warn!(url, "album art fetch failed; will retry");
+                    }
+                }
+                Some(art)
+            }
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => None,
         }
@@ -256,6 +335,76 @@ mod tests {
             join("http://localhost:3000", "https://cdn.example/logo.png"),
             "https://cdn.example/logo.png"
         );
+    }
+
+    #[test]
+    fn pending_key_keeps_the_published_space() {
+        // Encode is the HTTP layer's job. The gate compares this string.
+        assert_eq!(
+            join(
+                "http://localhost:3000",
+                "https://radio-directory.firebaseapp.com/volumio/src/images/radio-thumbnails/Classic FM.jpg"
+            ),
+            "https://radio-directory.firebaseapp.com/volumio/src/images/radio-thumbnails/Classic FM.jpg"
+        );
+    }
+
+    #[test]
+    fn first_path_is_sent() {
+        let mut gate = FetchGate::new();
+        let t0 = Instant::now();
+        assert!(gate.should_send("/albumart", t0));
+        assert!(!gate.should_send("/albumart", t0));
+    }
+
+    #[test]
+    fn success_does_not_refetch() {
+        let mut gate = FetchGate::new();
+        let t0 = Instant::now();
+        assert!(gate.should_send("https://cdn.example/a.jpg", t0));
+        gate.completed(true, t0);
+        assert!(!gate.should_send("https://cdn.example/a.jpg", t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn failed_url_retries_after_backoff_not_before() {
+        let mut gate = FetchGate::new();
+        let t0 = Instant::now();
+        assert!(gate.should_send("Classic FM.jpg", t0));
+        gate.completed(false, t0);
+        assert_eq!(gate.failures, 1);
+        assert!(!gate.should_send("Classic FM.jpg", t0 + Duration::from_millis(1999)));
+        assert!(gate.should_send("Classic FM.jpg", t0 + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn in_flight_blocks_a_retry() {
+        let mut gate = FetchGate::new();
+        let t0 = Instant::now();
+        assert!(gate.should_send("/a", t0));
+        gate.completed(false, t0);
+        assert!(gate.should_send("/a", t0 + Duration::from_secs(2)));
+        assert!(!gate.should_send("/a", t0 + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn new_path_sends_immediately_and_resets_failures() {
+        let mut gate = FetchGate::new();
+        let t0 = Instant::now();
+        assert!(gate.should_send("/old", t0));
+        gate.completed(false, t0);
+        assert_eq!(gate.failures, 1);
+        assert!(gate.should_send("/new", t0));
+        assert_eq!(gate.failures, 0);
+        assert!(!gate.failed);
+    }
+
+    #[test]
+    fn backoff_opens_then_caps() {
+        assert_eq!(retry_delay(1), Duration::from_secs(2));
+        assert_eq!(retry_delay(2), Duration::from_secs(8));
+        assert_eq!(retry_delay(3), Duration::from_secs(30));
+        assert_eq!(retry_delay(9), Duration::from_secs(30));
     }
 
     #[test]

@@ -276,4 +276,19 @@ mod state_tests {
         assert_eq!(state.volume, Some(40));
         assert!(!state.is_muted());
     }
+
+    #[test]
+    fn same_scene_ignores_albumart_and_seek() {
+        // Art is requested from the current poll, not from a scene change.
+        // Seek advances every second while playing; gating on it flickers.
+        let a = parse(
+            r#"{"status":"play","title":"Classic FM","albumart":"https://cdn/Classic FM.jpg","seek":1,"duration":0}"#,
+        );
+        let b = parse(
+            r#"{"status":"play","title":"Classic FM","albumart":"https://cdn/Classic%20FM.jpg","seek":2000,"duration":0}"#,
+        );
+        assert!(a.same_scene(&b));
+        let c = parse(r#"{"status":"pause","title":"Classic FM","seek":2000,"duration":0}"#);
+        assert!(!a.same_scene(&c));
+    }
 }

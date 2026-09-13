@@ -153,6 +153,30 @@ The browser UI shows station logos because the browser loads the absolute URL
 itself. Stream art is served over https, which is why the renderer carries
 TLS.
 
+### Webradio Selection albumart URLs contain a literal space
+
+Established from PIXIS diagnostic [ZsBIM8P](http://logs.volumio.org/volumio/ZsBIM8P.html)
+(Classic FM playing, metadata on the LCD, grey information chip) and from
+`volumio3-backend` `app/plugins/music_service/webradio/index.js`:
+
+    albumart: thumbnaiEndpoint + station.title + '.jpg'
+
+For Classic FM that is
+
+    https://radio-directory.firebaseapp.com/volumio/src/images/radio-thumbnails/Classic FM.jpg
+
+The file exists: HTTP/1.1 200, `image/jpeg`, 9058 bytes, no redirect, once
+the space is `%20`. A raw space on the GET line is not a valid request-target.
+The original SD card and the HDMI UI show the logo because the browser
+encodes. Local and TIDAL paths usually have no space, which is why those
+covers worked.
+
+`http.rs` encodes the request-target when writing the GET line. The getState
+string is not rewritten, so the art-loader pending key still matches.
+
+A failed fetch no longer locks that string forever. The same URL is retried
+on a 2 s / 8 s / 30 s backoff. A successful cover is still fetched once.
+
 ---
 
 ## Open defects
@@ -188,11 +212,14 @@ status file only when there are none.
 ### Repeated album art fetches
 
 rustls handshake logs appeared roughly twice a second for a station whose
-`albumart` URL was not changing. `ArtLoader::request` deduplicates on the path
-and the logic reads as correct, so the cause is not identified.
+`albumart` URL was not changing. The fetch gate still deduplicates on the
+getState string and a successful cover is not sent again. Retry is only
+after a failed result and only after the backoff, so a playing logo must
+not handshake every poll.
 
 Not reproduced since. Needs `RUST_LOG=info,waveshare28_panel=debug` output
-while a stream with a remote logo is playing.
+while a stream with a remote logo is playing. A twice-a-second handshake
+on an unchanged successful URL is a regression.
 
 ### Intermittent state poll failures
 
