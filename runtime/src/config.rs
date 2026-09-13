@@ -31,6 +31,42 @@ impl Default for Backend {
     }
 }
 
+/// Status-screen type size: hostname, addresses, startup footer.
+///
+/// `large` is the biggest stock mono font (`FONT_10X20`). A literal 2× of
+/// the meta face would be 12×20 and an IPv6 address would be 468 px, which
+/// is wider than either frame. Large mode wraps; it does not scale one line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusText {
+    Normal,
+    Large,
+}
+
+impl Default for StatusText {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+/// Vertical space between the volume slider and the progress bar.
+///
+/// Named steps, not pixels. Extra room is taken from album art, never from
+/// the transport strip (40 px hit targets).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BarGap {
+    Tight,
+    Default,
+    Roomy,
+}
+
+impl Default for BarGap {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
 /// Clockwise degrees to the counter-clockwise value fbtft's `rotate` uses
 /// for the same physical orientation.
 pub fn fbtft_rotate(clockwise: u16) -> u16 {
@@ -87,6 +123,14 @@ pub struct Config {
     /// display driver and touch coordinates are mapped back through the same
     /// value, so the two cannot disagree.
     pub rotation: u16,
+    /// Status-screen type on portrait rotations (0, 180).
+    pub status_text_portrait: StatusText,
+    /// Status-screen type on landscape rotations (90, 270).
+    pub status_text_landscape: StatusText,
+    /// Volume-to-progress gap on portrait rotations.
+    pub bar_gap_portrait: BarGap,
+    /// Volume-to-progress gap on landscape rotations.
+    pub bar_gap_landscape: BarGap,
 
     /// Volumio state endpoint.
     pub state_url: String,
@@ -123,6 +167,10 @@ impl Default for Config {
             gpiochip: "/dev/gpiochip0".into(),
 
             rotation: 0,
+            status_text_portrait: StatusText::Normal,
+            status_text_landscape: StatusText::Normal,
+            bar_gap_portrait: BarGap::Default,
+            bar_gap_landscape: BarGap::Default,
 
             state_url: "http://localhost:3000/api/v1/getState".into(),
             status_url: "http://localhost:3000/status".into(),
@@ -181,6 +229,24 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Status type for the configured rotation.
+    pub fn status_text(&self) -> StatusText {
+        if matches!(self.rotation, 90 | 270) {
+            self.status_text_landscape
+        } else {
+            self.status_text_portrait
+        }
+    }
+
+    /// Bar gap for the configured rotation.
+    pub fn bar_gap(&self) -> BarGap {
+        if matches!(self.rotation, 90 | 270) {
+            self.bar_gap_landscape
+        } else {
+            self.bar_gap_portrait
+        }
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +268,8 @@ mod tests {
         assert_eq!(cfg.status_url, "http://localhost:3000/status");
         assert_eq!(cfg.spi_dev, "/dev/spidev0.0");
         assert_eq!(cfg.fb_dev, "/dev/fb1");
+        assert_eq!(cfg.status_text_portrait, StatusText::Normal);
+        assert_eq!(cfg.bar_gap_landscape, BarGap::Default);
     }
 
     #[test]
@@ -246,6 +314,29 @@ mod tests {
         assert_eq!(cfg.backend, Backend::Framebuffer);
         assert_eq!(cfg.rotation, 270);
         assert_eq!(fbtft_rotate(cfg.rotation), 90);
+    }
+
+    #[test]
+    fn layout_steps_parse() {
+        let f = write(
+            "status_text_portrait = \"large\"\n\
+             status_text_landscape = \"normal\"\n\
+             bar_gap_portrait = \"roomy\"\n\
+             bar_gap_landscape = \"tight\"\n",
+        );
+        let cfg = Config::load(f.path()).unwrap();
+        assert_eq!(cfg.status_text_portrait, StatusText::Large);
+        assert_eq!(cfg.status_text_landscape, StatusText::Normal);
+        assert_eq!(cfg.bar_gap_portrait, BarGap::Roomy);
+        assert_eq!(cfg.bar_gap_landscape, BarGap::Tight);
+    }
+
+    #[test]
+    fn bad_layout_step_is_an_error() {
+        let f = write("bar_gap_portrait = \"12px\"\n");
+        assert!(Config::load(f.path()).is_err());
+        let f = write("status_text_landscape = \"huge\"\n");
+        assert!(Config::load(f.path()).is_err());
     }
 
     #[test]

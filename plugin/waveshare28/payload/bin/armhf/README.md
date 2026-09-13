@@ -1,4 +1,4 @@
-Published `runtime-v1.1.2` `armv7-unknown-linux-musleabihf` renderer.
+Published `runtime-v1.2.0` `armv7-unknown-linux-musleabihf` renderer.
 
     waveshare28-panel
     waveshare28-panel.sha256

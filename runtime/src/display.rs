@@ -109,7 +109,7 @@ pub struct Panel {
 impl Panel {
     /// Open the configured backend and initialise the drawing surface.
     pub fn open(cfg: &Config) -> Result<Self> {
-        let layout = Layout::for_rotation(cfg.rotation);
+        let layout = Layout::from_config(cfg);
         match cfg.backend {
             Backend::Spi => open_spi(cfg, layout),
             Backend::Framebuffer => open_fb(cfg, layout),
