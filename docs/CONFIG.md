@@ -441,7 +441,7 @@ plugin installer does not: enable (`onStart`) calls `apply`.
 `plugin/waveshare28` is store-shaped (`system_controller`, category
 `system_hardware`, armhf, Bookworm).
 `install.sh` copies `payload/waveshare28-config` and
-`payload/bin/armhf/waveshare28-panel` (runtime-v1.1.1 musleabihf) into
+`payload/bin/armhf/waveshare28-panel` (runtime-v1.1.2 musleabihf) into
 `/usr/local/bin` and writes sudoers. It does not run `apply` and does
 not start the panel unit. Enabling the plugin (`onStart`) runs `apply`.
 Disabling it (`onStop`) runs `recover`. Enabling with the tool missing

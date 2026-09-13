@@ -7,7 +7,9 @@
 //! HTTP implementation and TLS is the only thing added.
 //!
 //! Scope is exactly what is needed and no more: no redirects, no keep-alive,
-//! no chunked decoding.
+//! no chunked decoding. The request-target is percent-encoded when written,
+//! because Volumio's webradio Selection concatenates `station.title` into a
+//! URL and leaves spaces in it. The stored URL is not rewritten.
 //!
 //! The body is delimited by `Content-Length` where the server sends one, and
 //! only falls back to reading until EOF where it does not. An earlier version
@@ -153,9 +155,12 @@ pub fn get_bytes(url: &str, timeout: Duration) -> Result<Vec<u8>, HttpError> {
 /// framing rules are identical; only the transport differs.
 fn exchange<S: Read + Write>(stream: &mut S, target: &Target) -> Result<Vec<u8>, HttpError> {
     // Host header carries the authority as given, including any explicit port.
+    // The path is encoded here, not in parse: getState comparisons and the
+    // art-loader pending key stay the string Volumio published.
     let req = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: waveshare28-panel\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-        target.path, target.authority
+        encode_request_target(&target.path),
+        target.authority
     );
     stream.write_all(req.as_bytes())?;
     stream.flush()?;
@@ -246,6 +251,67 @@ fn find_header_end(raw: &[u8]) -> Option<usize> {
     raw.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
+/// Encode an origin-form request-target for an HTTP/1.1 request line.
+///
+/// Leaves RFC 3986 unreserved, sub-delims, and the structural `/ ? : @`
+/// bytes as they stand, and leaves a valid `%HH` sequence alone so a URL
+/// that is already encoded is not turned into `%2520`. Everything else,
+/// including space, becomes `%XX`.
+fn encode_request_target(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if is_unencoded_request_byte(b) {
+            out.push(b as char);
+            i += 1;
+        } else if b == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            out.push('%');
+            out.push(bytes[i + 1] as char);
+            out.push(bytes[i + 2] as char);
+            i += 3;
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Bytes that are legal in an origin-form request-target without encoding.
+fn is_unencoded_request_byte(b: u8) -> bool {
+    matches!(
+        b,
+        b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b';'
+            | b'='
+            | b':'
+            | b'@'
+            | b'/'
+            | b'?'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +371,70 @@ mod tests {
     fn finds_header_terminator() {
         assert_eq!(find_header_end(b"AB\r\n\r\nbody"), Some(2));
         assert_eq!(find_header_end(b"no terminator"), None);
+    }
+
+    #[test]
+    fn getstate_path_is_unchanged() {
+        assert_eq!(
+            encode_request_target("/api/v1/getState"),
+            "/api/v1/getState"
+        );
+        assert_eq!(
+            encode_request_target("/api/v1/commands/?cmd=volume&volume=40"),
+            "/api/v1/commands/?cmd=volume&volume=40"
+        );
+    }
+
+    #[test]
+    fn encodes_classic_fm_selection_space() {
+        // Volumio Selection: thumbnaiEndpoint + station.title + ".jpg".
+        assert_eq!(
+            encode_request_target("/volumio/src/images/radio-thumbnails/Classic FM.jpg"),
+            "/volumio/src/images/radio-thumbnails/Classic%20FM.jpg"
+        );
+    }
+
+    #[test]
+    fn does_not_double_encode_percent_sequences() {
+        assert_eq!(
+            encode_request_target("/volumio/src/images/radio-thumbnails/Classic%20FM.jpg"),
+            "/volumio/src/images/radio-thumbnails/Classic%20FM.jpg"
+        );
+        assert_eq!(
+            encode_request_target("/albumart?web=Classic%20FM.jpg"),
+            "/albumart?web=Classic%20FM.jpg"
+        );
+    }
+
+    #[test]
+    fn encodes_query_spaces_and_leaves_delimiters() {
+        assert_eq!(
+            encode_request_target("/albumart?web=Classic FM.jpg"),
+            "/albumart?web=Classic%20FM.jpg"
+        );
+    }
+
+    #[test]
+    fn encodes_a_lone_percent_and_keeps_plus() {
+        // 'b' is hex, '+' is not, so `%b+` is not a valid %HH.
+        assert_eq!(encode_request_target("/a%b+c"), "/a%25b+c");
+        // "%6" is not a valid %HH, so the percent is encoded and '6' stays.
+        assert_eq!(encode_request_target("/%6"), "/%256");
+    }
+
+    #[test]
+    fn parse_keeps_the_published_path() {
+        let t = parse(
+            "https://radio-directory.firebaseapp.com/volumio/src/images/radio-thumbnails/Classic FM.jpg",
+        )
+        .unwrap();
+        assert_eq!(
+            t.path,
+            "/volumio/src/images/radio-thumbnails/Classic FM.jpg"
+        );
+        assert_eq!(
+            encode_request_target(&t.path),
+            "/volumio/src/images/radio-thumbnails/Classic%20FM.jpg"
+        );
     }
 }
