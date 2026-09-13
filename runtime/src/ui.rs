@@ -11,7 +11,9 @@
 //! [`hit`] applies the inverse transform before testing.
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, ascii::FONT_9X15_BOLD, MonoFont, MonoTextStyle},
+    mono_font::{
+        ascii::FONT_10X20, ascii::FONT_6X10, ascii::FONT_9X15_BOLD, MonoFont, MonoTextStyle,
+    },
     pixelcolor::Rgb565,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -19,6 +21,7 @@ use embedded_graphics::{
 };
 
 use crate::art::Art;
+use crate::config::{BarGap, Config, StatusText};
 use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::touch::Touch;
@@ -58,6 +61,8 @@ pub struct Layout {
     pub progress: Rectangle,
     /// Transport strip, split into equal thirds.
     pub transport: Rectangle,
+    /// Status-screen type for this orientation.
+    pub status_text: StatusText,
 }
 
 fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
@@ -66,24 +71,44 @@ fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
 
 impl Layout {
     /// Layout for a rotation in degrees. 0 and 180 are portrait, 90 and 270
-    /// landscape.
+    /// landscape. Default gap and status type; the missing-file path goes
+    /// through [`Config::default`] and [`Self::from_config`].
+    #[cfg(test)]
     pub fn for_rotation(rotation: u16) -> Self {
+        Self::compose(rotation, BarGap::Default, StatusText::Normal)
+    }
+
+    /// Layout for the configured rotation, gap and status type.
+    pub fn from_config(cfg: &Config) -> Self {
+        Self::compose(cfg.rotation, cfg.bar_gap(), cfg.status_text())
+    }
+
+    fn compose(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
         match rotation {
-            90 | 270 => Self::landscape(rotation),
-            _ => Self::portrait(rotation),
+            90 | 270 => Self::landscape(rotation, gap, status_text),
+            _ => Self::portrait(rotation, gap, status_text),
         }
     }
 
     /// 240 wide by 320 tall. Art on top, everything else stacked beneath.
-    fn portrait(rotation: u16) -> Self {
+    ///
+    /// Transport stays at y 292. Extra bar gap moves the slider up; roomy
+    /// also shortens the art box by 4 px so the text block still fits.
+    fn portrait(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
+        let (art_h, text_y, vol_y, prog_y) = match gap {
+            BarGap::Tight => (200, 214, 270, 280),
+            BarGap::Default => (200, 214, 268, 280),
+            BarGap::Roomy => (196, 210, 260, 280),
+        };
         Self {
             rotation,
             frame: rect(0, 0, 240, 320),
-            art: rect(20, 8, 200, 200),
-            text: rect(4, 214, 232, 48),
-            volume: rect(10, 268, 220, 6),
-            progress: rect(10, 280, 220, 4),
+            art: rect(20, 8, 200, art_h),
+            text: rect(4, text_y, 232, 48),
+            volume: rect(10, vol_y, 220, 6),
+            progress: rect(10, prog_y, 220, 4),
             transport: rect(0, 292, 240, 28),
+            status_text,
         }
     }
 
@@ -103,15 +128,23 @@ impl Layout {
     /// The cost is album art at 168 rather than 200. It is still by far the
     /// largest element, and a slider that cannot be landed on is a worse
     /// daily annoyance than 32 pixels of cover.
-    fn landscape(rotation: u16) -> Self {
+    fn landscape(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
+        // Transport is pinned at y 200, height 40. Roomy steals 12 px from
+        // the art box; tight and default keep the 168 cover.
+        let (art_s, vol_y, prog_y) = match gap {
+            BarGap::Tight => (168, 178, 188),
+            BarGap::Default => (168, 178, 190),
+            BarGap::Roomy => (156, 168, 188),
+        };
         Self {
             rotation,
             frame: rect(0, 0, 320, 240),
-            art: rect(10, 4, 168, 168),
-            text: rect(184, 4, 132, 168),
-            volume: rect(10, 178, 300, 6),
-            progress: rect(10, 190, 300, 4),
+            art: rect(10, 4, art_s, art_s),
+            text: rect(184, 4, 132, art_s),
+            volume: rect(10, vol_y, 300, 6),
+            progress: rect(10, prog_y, 300, 4),
             transport: rect(0, 200, 320, 40),
+            status_text,
         }
     }
 
@@ -223,6 +256,30 @@ const LINE_GAP: i32 = 2;
 const FIELD_GAP: i32 = 8;
 /// Pixels below the pinned `starting` footer.
 const FOOTER_MARGIN: i32 = 16;
+
+/// Title and fact faces for the status screen.
+///
+/// Large is `FONT_10X20` for both. That is the biggest stock face; a 2×
+/// meta line is wider than the panel, so addresses wrap instead.
+fn status_fonts(mode: StatusText) -> (&'static MonoFont<'static>, &'static MonoFont<'static>) {
+    match mode {
+        StatusText::Normal => (TITLE_FONT, META_FONT),
+        StatusText::Large => (&FONT_10X20, &FONT_10X20),
+    }
+}
+
+/// Append `text` wrapped to `width` with `style`.
+fn push_wrapped(
+    lines: &mut Vec<(String, MonoTextStyle<'static, Rgb565>)>,
+    text: &str,
+    width: u32,
+    font: &'static MonoFont<'static>,
+    style: MonoTextStyle<'static, Rgb565>,
+) {
+    for part in wrap(text, width, font) {
+        lines.push((part, style));
+    }
+}
 
 /// Greedy word wrap to a pixel width, for a monospaced font.
 ///
@@ -480,52 +537,76 @@ where
         .build();
     let cx = region.size.width as i32 / 2;
 
-    let title = MonoTextStyle::new(TITLE_FONT, Rgb565::WHITE);
-    let section = MonoTextStyle::new(TITLE_FONT, Rgb565::CSS_LIGHT_GRAY);
-    let fact = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
-    let status = MonoTextStyle::new(TITLE_FONT, Rgb565::CSS_DIM_GRAY);
+    let (title_font, fact_font) = status_fonts(layout.status_text);
+    let width = region.size.width;
+    let title = MonoTextStyle::new(title_font, Rgb565::WHITE);
+    let section = MonoTextStyle::new(title_font, Rgb565::CSS_LIGHT_GRAY);
+    let fact = MonoTextStyle::new(fact_font, Rgb565::CSS_LIGHT_GRAY);
+    let status = MonoTextStyle::new(title_font, Rgb565::CSS_DIM_GRAY);
 
+    // Hostname first so a long name wraps like an address, then the body.
     // Build the lines first so the block height is known and it can be
     // centred, rather than guessing a starting offset per state.
-    let mut lines: Vec<(String, MonoTextStyle<Rgb565>)> = Vec::new();
+    let mut head: Vec<(String, MonoTextStyle<Rgb565>)> = Vec::new();
+    push_wrapped(&mut head, &host.hostname, width, title_font, title);
+
+    let mut body: Vec<(String, MonoTextStyle<Rgb565>)> = Vec::new();
     if host.addrs.is_empty() && host.hotspot.is_none() {
-        lines.push(("waiting for network".into(), status));
+        push_wrapped(&mut body, "waiting for network", width, title_font, status);
     } else {
         for a in &host.addrs {
-            lines.push((format!("{}  {}", a.link.label(), a.addr), fact));
+            push_wrapped(
+                &mut body,
+                &format!("{}  {}", a.link.label(), a.addr),
+                width,
+                fact_font,
+                fact,
+            );
         }
         if let Some(hs) = &host.hotspot {
             // Instruction, not another LAN line: join this network, then
             // open this address.
-            lines.push(("Wi-Fi setup".into(), section));
-            lines.push((hs.ssid.clone(), fact));
-            lines.push((hs.addr.clone(), fact));
+            push_wrapped(&mut body, "Wi-Fi setup", width, title_font, section);
+            push_wrapped(&mut body, &hs.ssid, width, fact_font, fact);
+            push_wrapped(&mut body, &hs.addr, width, fact_font, fact);
         }
     }
 
-    let title_h = TITLE_FONT.character_size.height as i32;
+    let title_h = title_font.character_size.height as i32;
     let split = if !host.addrs.is_empty() && host.hotspot.is_some() {
         FIELD_GAP
     } else {
         0
     };
     let hotspot_at = if split > 0 {
-        Some(host.addrs.len())
+        // First body line that is the hotspot heading. Address lines may
+        // have wrapped, so this is "after the last address line".
+        let addr_lines = host
+            .addrs
+            .iter()
+            .map(|a| wrap(&format!("{}  {}", a.link.label(), a.addr), width, fact_font).len())
+            .sum();
+        Some(addr_lines)
     } else {
         None
     };
 
-    let mut body_h = 0;
-    for (i, (_, style)) in lines.iter().enumerate() {
-        if i > 0 {
-            body_h += LINE_GAP;
+    let stacked = |rows: &[(String, MonoTextStyle<Rgb565>)]| {
+        if rows.is_empty() {
+            return 0;
         }
-        if Some(i) == hotspot_at {
+        rows.iter()
+            .map(|(_, s)| s.font.character_size.height as i32)
+            .sum::<i32>()
+            + (rows.len() as i32 - 1) * LINE_GAP
+    };
+    let mut body_h = stacked(&body);
+    if let Some(i) = hotspot_at {
+        if i > 0 && i < body.len() {
             body_h += FIELD_GAP;
         }
-        body_h += style.font.character_size.height as i32;
     }
-    let block = title_h + FIELD_GAP + body_h;
+    let block = stacked(&head) + FIELD_GAP + body_h;
     let reserved = if footer.is_some() {
         title_h + FOOTER_MARGIN * 2
     } else {
@@ -534,10 +615,13 @@ where
     let mut y = ((region.size.height as i32 - reserved - block) / 2).max(0);
 
     // Infallible: RowBuf discards out-of-bounds pixels.
-    let _ = Text::with_text_style(&host.hostname, Point::new(cx, y), title, centred).draw(&mut buf);
-    y += title_h + FIELD_GAP;
+    for (text, style) in &head {
+        let _ = Text::with_text_style(text, Point::new(cx, y), *style, centred).draw(&mut buf);
+        y += style.font.character_size.height as i32 + LINE_GAP;
+    }
+    y += FIELD_GAP - LINE_GAP;
 
-    for (i, (text, style)) in lines.iter().enumerate() {
+    for (i, (text, style)) in body.iter().enumerate() {
         if Some(i) == hotspot_at {
             y += FIELD_GAP;
         }
@@ -758,4 +842,103 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn origin(r: Rectangle) -> (i32, i32, u32, u32) {
+        (r.top_left.x, r.top_left.y, r.size.width, r.size.height)
+    }
+
+    #[test]
+    fn default_portrait_matches_the_shipped_layout() {
+        let l = Layout::for_rotation(0);
+        assert_eq!(origin(l.art), (20, 8, 200, 200));
+        assert_eq!(origin(l.text), (4, 214, 232, 48));
+        assert_eq!(origin(l.volume), (10, 268, 220, 6));
+        assert_eq!(origin(l.progress), (10, 280, 220, 4));
+        assert_eq!(origin(l.transport), (0, 292, 240, 28));
+        assert_eq!(l.status_text, StatusText::Normal);
+    }
+
+    #[test]
+    fn default_landscape_matches_the_shipped_layout() {
+        let l = Layout::for_rotation(270);
+        assert_eq!(origin(l.art), (10, 4, 168, 168));
+        assert_eq!(origin(l.text), (184, 4, 132, 168));
+        assert_eq!(origin(l.volume), (10, 178, 300, 6));
+        assert_eq!(origin(l.progress), (10, 190, 300, 4));
+        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+    }
+
+    #[test]
+    fn tight_keeps_art_and_closes_the_bar_gap() {
+        let p = Layout::compose(0, BarGap::Tight, StatusText::Normal);
+        assert_eq!(origin(p.art), (20, 8, 200, 200));
+        assert_eq!(origin(p.volume), (10, 270, 220, 6));
+        assert_eq!(origin(p.progress), (10, 280, 220, 4));
+        assert_eq!(origin(p.transport), (0, 292, 240, 28));
+        let l = Layout::compose(90, BarGap::Tight, StatusText::Normal);
+        assert_eq!(origin(l.art), (10, 4, 168, 168));
+        assert_eq!(origin(l.volume), (10, 178, 300, 6));
+        assert_eq!(origin(l.progress), (10, 188, 300, 4));
+        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+    }
+
+    #[test]
+    fn transport_does_not_move_when_the_gap_opens() {
+        for gap in [BarGap::Tight, BarGap::Default, BarGap::Roomy] {
+            let p = Layout::compose(0, gap, StatusText::Normal);
+            assert_eq!(origin(p.transport), (0, 292, 240, 28));
+            let l = Layout::compose(90, gap, StatusText::Normal);
+            assert_eq!(origin(l.transport), (0, 200, 320, 40));
+        }
+    }
+
+    #[test]
+    fn roomy_portrait_opens_the_bar_gap_from_art() {
+        let l = Layout::compose(0, BarGap::Roomy, StatusText::Normal);
+        assert_eq!(origin(l.volume), (10, 260, 220, 6));
+        assert_eq!(origin(l.progress), (10, 280, 220, 4));
+        assert_eq!(l.art.size.height, 196);
+        let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
+        assert_eq!(between, 14);
+    }
+
+    #[test]
+    fn roomy_landscape_steals_from_art_not_transport() {
+        let l = Layout::compose(90, BarGap::Roomy, StatusText::Normal);
+        assert_eq!(origin(l.art), (10, 4, 156, 156));
+        assert_eq!(origin(l.volume), (10, 168, 300, 6));
+        assert_eq!(origin(l.progress), (10, 188, 300, 4));
+        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+        let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
+        assert_eq!(between, 14);
+    }
+
+    #[test]
+    fn large_status_wraps_ipv6_instead_of_one_wide_line() {
+        let v6 = "fd12:3456:789a:bcde:0123:4567:89ab:cdef";
+        assert_eq!(v6.chars().count(), 39);
+        let parts = wrap(v6, 240, &FONT_10X20);
+        assert!(parts.len() >= 2, "{parts:?}");
+        assert!(parts.iter().all(|p| p.chars().count() * 10 <= 240));
+    }
+
+    #[test]
+    fn from_config_uses_the_orientation_keys() {
+        let cfg = Config {
+            rotation: 270,
+            status_text_landscape: StatusText::Large,
+            bar_gap_landscape: BarGap::Roomy,
+            status_text_portrait: StatusText::Normal,
+            bar_gap_portrait: BarGap::Tight,
+            ..Config::default()
+        };
+        let l = Layout::from_config(&cfg);
+        assert_eq!(l.status_text, StatusText::Large);
+        assert_eq!(l.art.size.width, 156);
+    }
 }

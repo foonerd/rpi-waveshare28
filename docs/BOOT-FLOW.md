@@ -208,6 +208,9 @@ A full IPv6 address is up to 39 characters. At 6 pixels per character that is
 - Landscape frame is 320 wide: fits on one line with room to spare
 - Portrait frame is 240 wide: 40 characters, so it just fits
 
+`status_text=large` is 10 pixels per character (390 px) and wraps. It does
+not scale a one-line address.
+
 So the status screen uses the full frame rather than the player's text column,
 which is only 132 wide. This is why `Layout` gains an explicit `frame`
 rectangle rather than the status screen deriving one from the transport strip,

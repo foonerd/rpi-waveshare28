@@ -49,14 +49,18 @@
         "endpoint": "system_controller/waveshare28",
         "method": "saveSettings"
       },
-      "saveButton": {
+          "saveButton": {
         "label": "TRANSLATE.SAVE",
         "data": [
           "rotation",
           "speed",
           "backend",
           "console",
-          "hdmi"
+          "hdmi",
+          "status_text_portrait",
+          "status_text_landscape",
+          "bar_gap_portrait",
+          "bar_gap_landscape"
         ]
       },
       "content": [
@@ -125,6 +129,64 @@
             "field": "backend",
             "value": "framebuffer"
           }
+        },
+        {
+          "id": "status_text_portrait",
+          "element": "select",
+          "label": "TRANSLATE.STATUS_TEXT_PORTRAIT",
+          "doc": "TRANSLATE.STATUS_TEXT_DOC",
+          "value": {
+            "value": "normal",
+            "label": "TRANSLATE.STATUS_TEXT_NORMAL"
+          },
+          "options": [
+            { "value": "normal", "label": "TRANSLATE.STATUS_TEXT_NORMAL" },
+            { "value": "large", "label": "TRANSLATE.STATUS_TEXT_LARGE" }
+          ]
+        },
+        {
+          "id": "status_text_landscape",
+          "element": "select",
+          "label": "TRANSLATE.STATUS_TEXT_LANDSCAPE",
+          "doc": "TRANSLATE.STATUS_TEXT_DOC",
+          "value": {
+            "value": "normal",
+            "label": "TRANSLATE.STATUS_TEXT_NORMAL"
+          },
+          "options": [
+            { "value": "normal", "label": "TRANSLATE.STATUS_TEXT_NORMAL" },
+            { "value": "large", "label": "TRANSLATE.STATUS_TEXT_LARGE" }
+          ]
+        },
+        {
+          "id": "bar_gap_portrait",
+          "element": "select",
+          "label": "TRANSLATE.BAR_GAP_PORTRAIT",
+          "doc": "TRANSLATE.BAR_GAP_DOC",
+          "value": {
+            "value": "default",
+            "label": "TRANSLATE.BAR_GAP_DEFAULT"
+          },
+          "options": [
+            { "value": "tight", "label": "TRANSLATE.BAR_GAP_TIGHT" },
+            { "value": "default", "label": "TRANSLATE.BAR_GAP_DEFAULT" },
+            { "value": "roomy", "label": "TRANSLATE.BAR_GAP_ROOMY" }
+          ]
+        },
+        {
+          "id": "bar_gap_landscape",
+          "element": "select",
+          "label": "TRANSLATE.BAR_GAP_LANDSCAPE",
+          "doc": "TRANSLATE.BAR_GAP_DOC",
+          "value": {
+            "value": "default",
+            "label": "TRANSLATE.BAR_GAP_DEFAULT"
+          },
+          "options": [
+            { "value": "tight", "label": "TRANSLATE.BAR_GAP_TIGHT" },
+            { "value": "default", "label": "TRANSLATE.BAR_GAP_DEFAULT" },
+            { "value": "roomy", "label": "TRANSLATE.BAR_GAP_ROOMY" }
+          ]
         }
       ]
     },

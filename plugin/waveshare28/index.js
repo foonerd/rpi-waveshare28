@@ -13,7 +13,17 @@ const TOOL_PATHS = [
 const SETTINGS_BACKUP_DIR = '/data/INTERNAL/waveshare28/backups';
 const SETTINGS_BACKUP_SCHEMA = 1;
 const SETTINGS_BACKUP_NAME_RE = /^[A-Za-z0-9._ -]{1,64}$/;
-const SETTINGS_BACKUP_KEYS = ['rotation', 'speed', 'backend', 'console', 'hdmi'];
+const SETTINGS_BACKUP_KEYS = [
+  'rotation',
+  'speed',
+  'backend',
+  'console',
+  'hdmi',
+  'status_text_portrait',
+  'status_text_landscape',
+  'bar_gap_portrait',
+  'bar_gap_landscape'
+];
 const PLUGIN_VERSION = require('./package.json').version;
 
 module.exports = Waveshare28;
@@ -265,6 +275,18 @@ Waveshare28.prototype.getUIConfig = function () {
       setField(settings, 'hdmi', function (item) {
         item.value = state.hdmi === 'on';
       });
+      setField(settings, 'status_text_portrait', function (item) {
+        setSelect(item, state.status_text_portrait || 'normal');
+      });
+      setField(settings, 'status_text_landscape', function (item) {
+        setSelect(item, state.status_text_landscape || 'normal');
+      });
+      setField(settings, 'bar_gap_portrait', function (item) {
+        setSelect(item, state.bar_gap_portrait || 'default');
+      });
+      setField(settings, 'bar_gap_landscape', function (item) {
+        setSelect(item, state.bar_gap_landscape || 'default');
+      });
 
       if (!params.hdmi) {
         removeFields(settings, ['hdmi']);
@@ -324,6 +346,22 @@ Waveshare28.prototype.saveSettings = function (data) {
     }
     if (data.hdmi !== undefined) {
       args.push('hdmi=' + (data.hdmi ? 'on' : 'off'));
+    }
+    const statusPortrait = fieldValue(data, 'status_text_portrait');
+    const statusLandscape = fieldValue(data, 'status_text_landscape');
+    const barGapPortrait = fieldValue(data, 'bar_gap_portrait');
+    const barGapLandscape = fieldValue(data, 'bar_gap_landscape');
+    if (statusPortrait !== undefined) {
+      args.push('status_text_portrait=' + statusPortrait);
+    }
+    if (statusLandscape !== undefined) {
+      args.push('status_text_landscape=' + statusLandscape);
+    }
+    if (barGapPortrait !== undefined) {
+      args.push('bar_gap_portrait=' + barGapPortrait);
+    }
+    if (barGapLandscape !== undefined) {
+      args.push('bar_gap_landscape=' + barGapLandscape);
     }
     if (args.length === 0) {
       defer.resolve();
@@ -565,6 +603,31 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   if (values.hdmi !== 'on' && values.hdmi !== 'off') {
     return { ok: false, message: 'That settings backup has an invalid hdmi.' };
   }
+  // Schema 1 backups written before these keys restore as the shipped defaults.
+  const statusPortrait = values.status_text_portrait == null || values.status_text_portrait === ''
+    ? 'normal'
+    : values.status_text_portrait;
+  const statusLandscape = values.status_text_landscape == null || values.status_text_landscape === ''
+    ? 'normal'
+    : values.status_text_landscape;
+  const barGapPortrait = values.bar_gap_portrait == null || values.bar_gap_portrait === ''
+    ? 'default'
+    : values.bar_gap_portrait;
+  const barGapLandscape = values.bar_gap_landscape == null || values.bar_gap_landscape === ''
+    ? 'default'
+    : values.bar_gap_landscape;
+  if (statusPortrait !== 'normal' && statusPortrait !== 'large') {
+    return { ok: false, message: 'That settings backup has an invalid status_text_portrait.' };
+  }
+  if (statusLandscape !== 'normal' && statusLandscape !== 'large') {
+    return { ok: false, message: 'That settings backup has an invalid status_text_landscape.' };
+  }
+  if (barGapPortrait !== 'tight' && barGapPortrait !== 'default' && barGapPortrait !== 'roomy') {
+    return { ok: false, message: 'That settings backup has an invalid bar_gap_portrait.' };
+  }
+  if (barGapLandscape !== 'tight' && barGapLandscape !== 'default' && barGapLandscape !== 'roomy') {
+    return { ok: false, message: 'That settings backup has an invalid bar_gap_landscape.' };
+  }
   return {
     ok: true,
     values: {
@@ -572,7 +635,11 @@ Waveshare28.prototype.validateBackupValues = function (values) {
       speed: speed,
       backend: values.backend,
       console: values.console,
-      hdmi: values.hdmi
+      hdmi: values.hdmi,
+      status_text_portrait: statusPortrait,
+      status_text_landscape: statusLandscape,
+      bar_gap_portrait: barGapPortrait,
+      bar_gap_landscape: barGapLandscape
     }
   };
 };
@@ -673,7 +740,11 @@ Waveshare28.prototype.restoreSettingsBackup = function (data) {
     const args = [
       'rotation=' + v.rotation,
       'speed=' + v.speed,
-      'backend=' + v.backend
+      'backend=' + v.backend,
+      'status_text_portrait=' + v.status_text_portrait,
+      'status_text_landscape=' + v.status_text_landscape,
+      'bar_gap_portrait=' + v.bar_gap_portrait,
+      'bar_gap_landscape=' + v.bar_gap_landscape
     ];
     if (v.backend === 'framebuffer') {
       args.push('console=' + v.console);

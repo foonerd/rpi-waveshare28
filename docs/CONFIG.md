@@ -161,6 +161,10 @@ Defaults, used when the file is absent or a key is omitted:
     backend=spi
     console=release
     hdmi=off
+    status_text_portrait=normal
+    status_text_landscape=normal
+    bar_gap_portrait=default
+    bar_gap_landscape=default
 
 ### `rotation`
 
@@ -285,6 +289,32 @@ keeps HDMI for audio or a real monitor. Plymouth then stays on HDMI.
 The `[pi4]` filter is still the firmware gate, so a userconfig copied
 onto a Pi 5 cannot turn that board's HDMI off.
 
+### `status_text_portrait` / `status_text_landscape`
+
+`normal` or `large`. Status screen only: hostname, addresses, and the
+startup footer. Player title and artist stay on the stock faces.
+
+`large` is the biggest stock mono face (`FONT_10X20`). A literal 2× of
+the address face is 468 px for a 39-character IPv6 address, which does
+not fit either frame. Large mode wraps; it does not scale one line.
+
+The active key is the one that matches `rotation`: portrait for 0 and
+180, landscape for 90 and 270. Changing either is live: `apply`
+rewrites the toml and restarts the unit. No reboot.
+
+    sudo waveshare28-config set status_text_landscape=large
+
+### `bar_gap_portrait` / `bar_gap_landscape`
+
+`tight`, `default` or `roomy`. Vertical space between the volume slider
+and the progress bar. Named steps, not pixels.
+
+Extra room is taken from album art, never from the transport strip
+(40 px hit targets). Defaults match the shipped layout. Same
+orientation rule as status text. Live after `apply`; no reboot.
+
+    sudo waveshare28-config set bar_gap_landscape=roomy
+
 ---
 
 ## What `apply` writes
@@ -369,6 +399,10 @@ The generated toml is only what the renderer needs from these keys:
     fb_dev = "/dev/fb0"
     rotation = 270
     spi_speed_hz = 32000000
+    status_text_portrait = "normal"
+    status_text_landscape = "normal"
+    bar_gap_portrait = "default"
+    bar_gap_landscape = "default"
 
 `fb_dev` is written only when `fb_st7789v` is already registered, so
 `apply` cannot replace a working panel path with `/dev/fb1`. The
@@ -425,6 +459,11 @@ Renderer owns the bus, no splash on this panel:
 
     sudo waveshare28-config set rotation=270 backend=spi
 
+Larger status text and more space between the slider and the progress
+bar, on a landscape mount:
+
+    sudo waveshare28-config set status_text_landscape=large bar_gap_landscape=roomy
+
 After a kernel OTA that has dropped `fbcon=`:
 
     waveshare28-config verify
@@ -441,7 +480,7 @@ plugin installer does not: enable (`onStart`) calls `apply`.
 `plugin/waveshare28` is store-shaped (`system_controller`, category
 `system_hardware`, armhf, Bookworm).
 `install.sh` copies `payload/waveshare28-config` and
-`payload/bin/armhf/waveshare28-panel` (runtime-v1.1.2 musleabihf) into
+`payload/bin/armhf/waveshare28-panel` (runtime-v1.2.0 musleabihf) into
 `/usr/local/bin` and writes sudoers. It does not run `apply` and does
 not start the panel unit. Enabling the plugin (`onStart`) runs `apply`.
 Disabling it (`onStop`) runs `recover`. Enabling with the tool missing
@@ -453,6 +492,7 @@ that `detect` says apply:
 | Control | Who sees it |
 |---|---|
 | rotation, speed, backend | all supported Pi |
+| status text, bar spacing | all supported Pi; one pair per orientation |
 | console | `backend=framebuffer` |
 | hdmi | Pi 4 family and `backend=framebuffer` |
 | 3A+ KMS | read-only status on 3A+ only |
@@ -468,13 +508,16 @@ a factory reset or a re-apply of the same framebuffer keys:
 would only toast "Settings applied." Enable (`onStart`) runs `apply`
 and offers a reboot only when `reboot_required` is true (framebuffer
 overlay not live). Default `backend=spi` does not reboot. `console=`
-only rewrites the unit. Disabling the plugin calls `recover` and keeps
-`/boot/waveshare28.conf`.
+only rewrites the unit. Status text and bar spacing rewrite the toml
+and restart the unit; they do not reboot. Disabling the plugin calls
+`recover` and keeps `/boot/waveshare28.conf`.
 
 Named settings backups (Soloist-style) live in
 `/data/INTERNAL/waveshare28/backups`. Create, restore and delete are
-on the plugin page. Restore runs the same `set` checks as Apply. Those
-files survive plugin uninstall; they do not survive a factory reset.
+on the plugin page. Restore runs the same `set` checks as Apply.
+Schema stays 1: backups written before the layout keys omit them and
+restore those four as the shipped defaults. Those files survive plugin
+uninstall; they do not survive a factory reset.
 `/boot/waveshare28.conf` is still the durable live copy.
 
 Sudoers is `/etc/sudoers.d/volumio-waveshare28` (`volumio-<plugin_name>`).
