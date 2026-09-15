@@ -1,4 +1,5 @@
-Published `runtime-v1.2.0` `armv7-unknown-linux-musleabihf` renderer.
+Unpublished `1.3.0` `armv7-unknown-linux-musleabihf` renderer
+(strip occupancy sitting; not a GitHub release tag yet).
 
     waveshare28-panel
     waveshare28-panel.sha256

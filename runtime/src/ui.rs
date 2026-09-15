@@ -21,7 +21,7 @@ use embedded_graphics::{
 };
 
 use crate::art::Art;
-use crate::config::{BarGap, Config, StatusText};
+use crate::config::{BarGap, Config, StatusText, Strip};
 use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::touch::Touch;
@@ -33,6 +33,104 @@ pub const NATIVE_H: u16 = 320;
 
 const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
 const META_FONT: &MonoFont = &FONT_6X10;
+
+/// Speaker mark to the left of the volume track. ASCII fonts have no
+/// speaker glyph. 12×10: cabinet + cone, then waves or a mute cross.
+const VOL_ICON_W: u32 = 12;
+const VOL_ICON_H: u32 = 10;
+const VOL_ICON_GAP: u32 = 2;
+
+/// Cabinet and filled cone. Coordinates in the 12×10 icon.
+const SPEAKER_BODY: &[(u8, u8)] = &[
+    // cabinet
+    (0, 3),
+    (1, 3),
+    (0, 4),
+    (1, 4),
+    (0, 5),
+    (1, 5),
+    (0, 6),
+    (1, 6),
+    // cone
+    (2, 2),
+    (2, 3),
+    (2, 4),
+    (2, 5),
+    (2, 6),
+    (2, 7),
+    (3, 1),
+    (3, 2),
+    (3, 3),
+    (3, 4),
+    (3, 5),
+    (3, 6),
+    (3, 7),
+    (3, 8),
+    (4, 0),
+    (4, 1),
+    (4, 2),
+    (4, 3),
+    (4, 4),
+    (4, 5),
+    (4, 6),
+    (4, 7),
+    (4, 8),
+    (4, 9),
+];
+
+/// Two arcs to the right of the cone, the usual “has sound” mark.
+const SPEAKER_WAVES: &[(u8, u8)] = &[
+    // inner
+    (6, 2),
+    (7, 3),
+    (7, 6),
+    (6, 7),
+    // outer
+    (8, 1),
+    (9, 2),
+    (10, 3),
+    (10, 6),
+    (9, 7),
+    (8, 8),
+];
+
+/// Cross in the wave area when muted or at zero.
+const SPEAKER_MUTE_X: &[(u8, u8)] = &[
+    (6, 1),
+    (7, 2),
+    (8, 3),
+    (9, 4),
+    (10, 5),
+    (11, 6),
+    (6, 2),
+    (7, 3),
+    (8, 4),
+    (9, 5),
+    (10, 6),
+    (11, 7),
+    (11, 1),
+    (10, 2),
+    (9, 3),
+    (8, 4),
+    (7, 5),
+    (6, 6),
+    (11, 2),
+    (10, 3),
+    (9, 4),
+    (8, 5),
+    (7, 6),
+    (6, 7),
+];
+
+/// The orange track, after the speaker. Hit mapping uses this so 0% is
+/// the start of the bar, not the icon.
+fn volume_track(slot: Rectangle) -> Rectangle {
+    let inset = VOL_ICON_W + VOL_ICON_GAP;
+    Rectangle::new(
+        slot.top_left + Point::new(inset as i32, 0),
+        Size::new(slot.size.width.saturating_sub(inset), slot.size.height),
+    )
+}
 
 /// Where everything sits, for one orientation.
 ///
@@ -63,6 +161,8 @@ pub struct Layout {
     pub transport: Rectangle,
     /// Status-screen type for this orientation.
     pub status_text: StatusText,
+    /// What occupies the volume-to-transport slot.
+    pub strip: Strip,
 }
 
 fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
@@ -75,18 +175,23 @@ impl Layout {
     /// through [`Config::default`] and [`Self::from_config`].
     #[cfg(test)]
     pub fn for_rotation(rotation: u16) -> Self {
-        Self::compose(rotation, BarGap::Default, StatusText::Normal)
+        Self::compose(
+            rotation,
+            BarGap::Default,
+            StatusText::Normal,
+            Strip::Progress,
+        )
     }
 
-    /// Layout for the configured rotation, gap and status type.
+    /// Layout for the configured rotation, gap, status type and strip.
     pub fn from_config(cfg: &Config) -> Self {
-        Self::compose(cfg.rotation, cfg.bar_gap(), cfg.status_text())
+        Self::compose(cfg.rotation, cfg.bar_gap(), cfg.status_text(), cfg.strip())
     }
 
-    fn compose(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
+    fn compose(rotation: u16, gap: BarGap, status_text: StatusText, strip: Strip) -> Self {
         match rotation {
-            90 | 270 => Self::landscape(rotation, gap, status_text),
-            _ => Self::portrait(rotation, gap, status_text),
+            90 | 270 => Self::landscape(rotation, gap, status_text, strip),
+            _ => Self::portrait(rotation, gap, status_text, strip),
         }
     }
 
@@ -94,11 +199,15 @@ impl Layout {
     ///
     /// Transport stays at y 292. Extra bar gap moves the slider up; roomy
     /// also shortens the art box by 4 px so the text block still fits.
-    fn portrait(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
+    fn portrait(rotation: u16, gap: BarGap, status_text: StatusText, strip: Strip) -> Self {
         let (art_h, text_y, vol_y, prog_y) = match gap {
             BarGap::Tight => (200, 214, 270, 280),
             BarGap::Default => (200, 214, 268, 280),
             BarGap::Roomy => (196, 210, 260, 280),
+        };
+        let (prog_y, prog_h) = match strip {
+            Strip::Off => (prog_y, 4),
+            _ => (prog_y - 4, 12),
         };
         Self {
             rotation,
@@ -106,9 +215,10 @@ impl Layout {
             art: rect(20, 8, 200, art_h),
             text: rect(4, text_y, 232, 48),
             volume: rect(10, vol_y, 220, 6),
-            progress: rect(10, prog_y, 220, 4),
+            progress: rect(10, prog_y, 220, prog_h),
             transport: rect(0, 292, 240, 28),
             status_text,
+            strip,
         }
     }
 
@@ -128,7 +238,7 @@ impl Layout {
     /// The cost is album art at 168 rather than 200. It is still by far the
     /// largest element, and a slider that cannot be landed on is a worse
     /// daily annoyance than 32 pixels of cover.
-    fn landscape(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
+    fn landscape(rotation: u16, gap: BarGap, status_text: StatusText, strip: Strip) -> Self {
         // Transport is pinned at y 200, height 40. Roomy steals 12 px from
         // the art box; tight and default keep the 168 cover.
         let (art_s, vol_y, prog_y) = match gap {
@@ -136,15 +246,20 @@ impl Layout {
             BarGap::Default => (168, 178, 190),
             BarGap::Roomy => (156, 168, 188),
         };
+        let (prog_y, prog_h) = match strip {
+            Strip::Off => (prog_y, 4),
+            _ => (prog_y - 4, 12),
+        };
         Self {
             rotation,
             frame: rect(0, 0, 320, 240),
             art: rect(10, 4, art_s, art_s),
             text: rect(184, 4, 132, art_s),
             volume: rect(10, vol_y, 300, 6),
-            progress: rect(10, prog_y, 300, 4),
+            progress: rect(10, prog_y, 300, prog_h),
             transport: rect(0, 200, 320, 40),
             status_text,
+            strip,
         }
     }
 
@@ -197,8 +312,9 @@ pub fn hit(layout: &Layout, t: Touch) -> Option<Action> {
         Size::new(slider.size.width, slider.size.height + 20),
     );
     if slider_zone.contains(p) {
-        let dx = (p.x - slider.top_left.x).max(0) as u32;
-        let pct = (dx * 100 / slider.size.width.max(1)).min(100);
+        let track = volume_track(slider);
+        let dx = (p.x - track.top_left.x).max(0) as u32;
+        let pct = (dx * 100 / track.size.width.max(1)).min(100);
         return Some(Action::Volume(pct as u8));
     }
 
@@ -738,9 +854,11 @@ where
     draw_text(target, layout.text, pane)
 }
 
-/// Repaint the progress bar only.
+/// Repaint the volume-to-transport slot.
 ///
-/// The seek/duration unit mismatch is handled in `PlayerState::progress`.
+/// Progress uses seek/duration. Stream paints IN fields the source wrote.
+/// Off, or a source that published nothing for that mode, is black. The
+/// seek/duration unit mismatch is handled in `PlayerState::progress`.
 pub fn draw_progress<D>(
     target: &mut D,
     layout: &Layout,
@@ -749,18 +867,116 @@ pub fn draw_progress<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let bar = layout.progress;
+    match layout.strip {
+        Strip::Off => blank_strip(target, layout.progress),
+        Strip::Stream => draw_stream_info(target, layout.progress, state),
+        Strip::Progress => draw_progress_times(target, layout.progress, state),
+    }
+}
 
-    // Nothing to show for a stream with no duration, which is the normal case
-    // for internet radio. Leave the row blank rather than drawing an empty
-    // trough that looks like a stalled track.
-    let Some(frac) = state.progress() else {
-        bar.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-            .draw(target)?;
-        return Ok(());
+fn blank_strip<D>(target: &mut D, bar: Rectangle) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    bar.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(target)
+}
+
+/// One centred line of IN format. Too long is clipped, not wrapped: the
+/// slot is one face tall.
+fn draw_stream_info<D>(target: &mut D, bar: Rectangle, state: &PlayerState) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let Some(text) = state.stream_info() else {
+        return blank_strip(target, bar);
     };
 
-    fill_bar(target, bar, frac, Rgb565::CSS_DIM_GRAY, Rgb565::WHITE)
+    let cols = (bar.size.width / META_FONT.character_size.width).max(1) as usize;
+    let shown: String = text.chars().take(cols).collect();
+
+    let mut buf = RowBuf::new(bar.size);
+    let style = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
+    let centred = TextStyleBuilder::new()
+        .baseline(Baseline::Middle)
+        .alignment(Alignment::Center)
+        .build();
+    let _ = Text::with_text_style(
+        &shown,
+        Point::new(bar.size.width as i32 / 2, bar.size.height as i32 / 2),
+        style,
+        centred,
+    )
+    .draw(&mut buf);
+    target.fill_contiguous(&bar, buf.px.iter().copied())
+}
+
+/// `m:ss` under an hour, `h:mm:ss` at or above. Matches the Web player's
+/// left/right counters, not a single `elapsed / total` string.
+fn fmt_clock(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// Elapsed on the left, total on the right, 6 px bar between — same
+/// thickness as the volume track, so the two slots are the same weight
+/// and the clocks say which is seek.
+fn draw_progress_times<D>(
+    target: &mut D,
+    slot: Rectangle,
+    state: &PlayerState,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let Some(frac) = state.progress() else {
+        return blank_strip(target, slot);
+    };
+    let elapsed = state.seek.unwrap_or(0) / 1000;
+    let total = state.duration.unwrap_or(0);
+    let left = fmt_clock(elapsed);
+    let right = fmt_clock(total);
+    let char_w = META_FONT.character_size.width;
+    let side = left.chars().count().max(right.chars().count()).max(4) as u32 * char_w;
+    let gap = 2u32;
+    let inner_w = slot.size.width.saturating_sub(side * 2 + gap * 2);
+    let bar_h = 6u32.min(slot.size.height);
+    let bar_y = (slot.size.height.saturating_sub(bar_h)) / 2;
+
+    let mut buf = RowBuf::new(slot.size);
+    let style = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
+    let left_align = TextStyleBuilder::new()
+        .baseline(Baseline::Middle)
+        .alignment(Alignment::Left)
+        .build();
+    let right_align = TextStyleBuilder::new()
+        .baseline(Baseline::Middle)
+        .alignment(Alignment::Right)
+        .build();
+    let cy = slot.size.height as i32 / 2;
+    let _ = Text::with_text_style(&left, Point::new(0, cy), style, left_align).draw(&mut buf);
+    let _ = Text::with_text_style(
+        &right,
+        Point::new(slot.size.width as i32, cy),
+        style,
+        right_align,
+    )
+    .draw(&mut buf);
+
+    if inner_w > 0 {
+        let track = Rectangle::new(
+            Point::new((side + gap) as i32, bar_y as i32),
+            Size::new(inner_w, bar_h),
+        );
+        let _ = fill_bar(&mut buf, track, frac, Rgb565::CSS_DIM_GRAY, Rgb565::WHITE);
+    }
+    target.fill_contiguous(&slot, buf.px.iter().copied())
 }
 
 /// Repaint the volume slider only.
@@ -768,19 +984,76 @@ pub fn draw_volume<D>(target: &mut D, layout: &Layout, state: &PlayerState) -> R
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let frac = if state.is_muted() {
+    let slot = layout.volume;
+    slot.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(target)?;
+
+    let muted = state.is_muted();
+    let volume = state.volume.unwrap_or(0);
+    draw_speaker(target, slot, muted || volume == 0)?;
+
+    let frac = if muted {
         0.0
     } else {
-        f32::from(state.volume.unwrap_or(0)) / 100.0
+        f32::from(volume) / 100.0
     };
 
     fill_bar(
         target,
-        layout.volume,
+        volume_track(slot),
         frac,
         Rgb565::CSS_DIM_GRAY,
         Rgb565::CSS_ORANGE,
     )
+}
+
+/// White cabinet/cone/waves with level; red cabinet/cone/cross when silent.
+fn speaker_colour(muted: bool, volume: u8) -> Rgb565 {
+    if muted || volume == 0 {
+        Rgb565::CSS_RED
+    } else {
+        Rgb565::WHITE
+    }
+}
+
+fn plot_icon_px<D>(
+    target: &mut D,
+    origin: Point,
+    pixels: &[(u8, u8)],
+    colour: Rgb565,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    for &(x, y) in pixels {
+        Pixel(
+            Point::new(origin.x + i32::from(x), origin.y + i32::from(y)),
+            colour,
+        )
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+fn draw_speaker<D>(target: &mut D, slot: Rectangle, silent: bool) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let colour = speaker_colour(silent, if silent { 0 } else { 1 });
+    let origin = Point::new(
+        slot.top_left.x,
+        slot.top_left.y + (slot.size.height as i32 - VOL_ICON_H as i32) / 2,
+    );
+    Rectangle::new(origin, Size::new(VOL_ICON_W, VOL_ICON_H))
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(target)?;
+    plot_icon_px(target, origin, SPEAKER_BODY, colour)?;
+    if silent {
+        plot_icon_px(target, origin, SPEAKER_MUTE_X, colour)?;
+    } else {
+        plot_icon_px(target, origin, SPEAKER_WAVES, colour)?;
+    }
+    Ok(())
 }
 
 /// Repaint the transport labels only.
@@ -858,9 +1131,10 @@ mod tests {
         assert_eq!(origin(l.art), (20, 8, 200, 200));
         assert_eq!(origin(l.text), (4, 214, 232, 48));
         assert_eq!(origin(l.volume), (10, 268, 220, 6));
-        assert_eq!(origin(l.progress), (10, 280, 220, 4));
+        assert_eq!(origin(l.progress), (10, 276, 220, 12));
         assert_eq!(origin(l.transport), (0, 292, 240, 28));
         assert_eq!(l.status_text, StatusText::Normal);
+        assert_eq!(l.strip, Strip::Progress);
     }
 
     #[test]
@@ -869,53 +1143,55 @@ mod tests {
         assert_eq!(origin(l.art), (10, 4, 168, 168));
         assert_eq!(origin(l.text), (184, 4, 132, 168));
         assert_eq!(origin(l.volume), (10, 178, 300, 6));
-        assert_eq!(origin(l.progress), (10, 190, 300, 4));
+        assert_eq!(origin(l.progress), (10, 186, 300, 12));
         assert_eq!(origin(l.transport), (0, 200, 320, 40));
     }
 
     #[test]
     fn tight_keeps_art_and_closes_the_bar_gap() {
-        let p = Layout::compose(0, BarGap::Tight, StatusText::Normal);
+        let p = Layout::compose(0, BarGap::Tight, StatusText::Normal, Strip::Progress);
         assert_eq!(origin(p.art), (20, 8, 200, 200));
         assert_eq!(origin(p.volume), (10, 270, 220, 6));
-        assert_eq!(origin(p.progress), (10, 280, 220, 4));
+        assert_eq!(origin(p.progress), (10, 276, 220, 12));
         assert_eq!(origin(p.transport), (0, 292, 240, 28));
-        let l = Layout::compose(90, BarGap::Tight, StatusText::Normal);
+        let l = Layout::compose(90, BarGap::Tight, StatusText::Normal, Strip::Progress);
         assert_eq!(origin(l.art), (10, 4, 168, 168));
         assert_eq!(origin(l.volume), (10, 178, 300, 6));
-        assert_eq!(origin(l.progress), (10, 188, 300, 4));
+        assert_eq!(origin(l.progress), (10, 184, 300, 12));
         assert_eq!(origin(l.transport), (0, 200, 320, 40));
     }
 
     #[test]
     fn transport_does_not_move_when_the_gap_opens() {
         for gap in [BarGap::Tight, BarGap::Default, BarGap::Roomy] {
-            let p = Layout::compose(0, gap, StatusText::Normal);
-            assert_eq!(origin(p.transport), (0, 292, 240, 28));
-            let l = Layout::compose(90, gap, StatusText::Normal);
-            assert_eq!(origin(l.transport), (0, 200, 320, 40));
+            for strip in [Strip::Progress, Strip::Stream, Strip::Off] {
+                let p = Layout::compose(0, gap, StatusText::Normal, strip);
+                assert_eq!(origin(p.transport), (0, 292, 240, 28));
+                let l = Layout::compose(90, gap, StatusText::Normal, strip);
+                assert_eq!(origin(l.transport), (0, 200, 320, 40));
+            }
         }
     }
 
     #[test]
     fn roomy_portrait_opens_the_bar_gap_from_art() {
-        let l = Layout::compose(0, BarGap::Roomy, StatusText::Normal);
+        let l = Layout::compose(0, BarGap::Roomy, StatusText::Normal, Strip::Progress);
         assert_eq!(origin(l.volume), (10, 260, 220, 6));
-        assert_eq!(origin(l.progress), (10, 280, 220, 4));
+        assert_eq!(origin(l.progress), (10, 276, 220, 12));
         assert_eq!(l.art.size.height, 196);
         let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
-        assert_eq!(between, 14);
+        assert_eq!(between, 10);
     }
 
     #[test]
     fn roomy_landscape_steals_from_art_not_transport() {
-        let l = Layout::compose(90, BarGap::Roomy, StatusText::Normal);
+        let l = Layout::compose(90, BarGap::Roomy, StatusText::Normal, Strip::Progress);
         assert_eq!(origin(l.art), (10, 4, 156, 156));
         assert_eq!(origin(l.volume), (10, 168, 300, 6));
-        assert_eq!(origin(l.progress), (10, 188, 300, 4));
+        assert_eq!(origin(l.progress), (10, 184, 300, 12));
         assert_eq!(origin(l.transport), (0, 200, 320, 40));
         let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
-        assert_eq!(between, 14);
+        assert_eq!(between, 10);
     }
 
     #[test]
@@ -935,10 +1211,61 @@ mod tests {
             bar_gap_landscape: BarGap::Roomy,
             status_text_portrait: StatusText::Normal,
             bar_gap_portrait: BarGap::Tight,
+            strip_landscape: Strip::Stream,
+            strip_portrait: Strip::Off,
             ..Config::default()
         };
         let l = Layout::from_config(&cfg);
         assert_eq!(l.status_text, StatusText::Large);
         assert_eq!(l.art.size.width, 156);
+        assert_eq!(l.strip, Strip::Stream);
+        assert_eq!(origin(l.progress), (10, 184, 300, 12));
+    }
+
+    #[test]
+    fn stream_grows_the_slot_without_moving_neighbours() {
+        let p = Layout::compose(0, BarGap::Default, StatusText::Normal, Strip::Stream);
+        assert_eq!(origin(p.art), (20, 8, 200, 200));
+        assert_eq!(origin(p.volume), (10, 268, 220, 6));
+        assert_eq!(origin(p.progress), (10, 276, 220, 12));
+        assert_eq!(origin(p.transport), (0, 292, 240, 28));
+        let l = Layout::compose(90, BarGap::Default, StatusText::Normal, Strip::Stream);
+        assert_eq!(origin(l.art), (10, 4, 168, 168));
+        assert_eq!(origin(l.volume), (10, 178, 300, 6));
+        assert_eq!(origin(l.progress), (10, 186, 300, 12));
+        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+    }
+
+    #[test]
+    fn off_keeps_the_progress_rect() {
+        let p = Layout::compose(0, BarGap::Default, StatusText::Normal, Strip::Off);
+        assert_eq!(origin(p.progress), (10, 280, 220, 4));
+        assert_eq!(origin(p.transport), (0, 292, 240, 28));
+    }
+
+    #[test]
+    fn clock_matches_the_web_player() {
+        assert_eq!(fmt_clock(0), "0:00");
+        assert_eq!(fmt_clock(323), "5:23");
+        assert_eq!(fmt_clock(269), "4:29");
+        assert_eq!(fmt_clock(3600), "1:00:00");
+        assert_eq!(fmt_clock(3661), "1:01:01");
+    }
+
+    #[test]
+    fn volume_track_starts_after_the_speaker() {
+        let l = Layout::for_rotation(270);
+        let track = volume_track(l.volume);
+        assert_eq!(track.top_left.x, l.volume.top_left.x + 14);
+        assert_eq!(track.size.height, 6);
+        assert_eq!(track.size.width, 286);
+    }
+
+    #[test]
+    fn speaker_is_red_when_silent() {
+        assert_eq!(speaker_colour(false, 48), Rgb565::WHITE);
+        assert_eq!(speaker_colour(true, 48), Rgb565::CSS_RED);
+        assert_eq!(speaker_colour(false, 0), Rgb565::CSS_RED);
+        assert_eq!(speaker_colour(true, 0), Rgb565::CSS_RED);
     }
 }

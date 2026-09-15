@@ -50,9 +50,12 @@ the address is the one thing someone needs before the player is reachable.
 
 After `/status` is `ready` and the first `getState` succeeds, it shows the
 player: album art, wrapped
-title, artist and album, a volume slider, a progress bar and a transport
-strip. A tap on the cover shows the address screen for ten seconds, or
-until the next tap. A failed poll during a Volumio restart is transient,
+title, artist and album, a volume slider with a speaker mark, a
+volume-to-transport slot and a transport strip. The slot defaults to
+elapsed / bar / total when `getState` publishes a duration; it can
+instead show IN stream fields or stay blank (`strip_portrait` /
+`strip_landscape`). A tap on the
+cover shows the address screen for ten seconds, or until the next tap. A failed poll during a Volumio restart is transient,
 and reverting to an address list mid-listening would be worse than a
 slightly stale player.
 

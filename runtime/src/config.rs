@@ -67,6 +67,25 @@ impl Default for BarGap {
     }
 }
 
+/// What occupies the slot between the volume slider and the transport.
+///
+/// Default is the shipped progress bar. `stream` paints the IN fields the
+/// source wrote (`trackType` / `codec` / `bitdepth` / `samplerate` /
+/// `bitrate`). `off` leaves the slot blank. Never invents an ALSA OUT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Strip {
+    Progress,
+    Stream,
+    Off,
+}
+
+impl Default for Strip {
+    fn default() -> Self {
+        Self::Progress
+    }
+}
+
 /// Clockwise degrees to the counter-clockwise value fbtft's `rotate` uses
 /// for the same physical orientation.
 pub fn fbtft_rotate(clockwise: u16) -> u16 {
@@ -131,6 +150,10 @@ pub struct Config {
     pub bar_gap_portrait: BarGap,
     /// Volume-to-progress gap on landscape rotations.
     pub bar_gap_landscape: BarGap,
+    /// Strip occupancy on portrait rotations (0, 180).
+    pub strip_portrait: Strip,
+    /// Strip occupancy on landscape rotations (90, 270).
+    pub strip_landscape: Strip,
 
     /// Volumio state endpoint.
     pub state_url: String,
@@ -171,6 +194,8 @@ impl Default for Config {
             status_text_landscape: StatusText::Normal,
             bar_gap_portrait: BarGap::Default,
             bar_gap_landscape: BarGap::Default,
+            strip_portrait: Strip::Progress,
+            strip_landscape: Strip::Progress,
 
             state_url: "http://localhost:3000/api/v1/getState".into(),
             status_url: "http://localhost:3000/status".into(),
@@ -247,6 +272,15 @@ impl Config {
             self.bar_gap_portrait
         }
     }
+
+    /// Strip occupancy for the configured rotation.
+    pub fn strip(&self) -> Strip {
+        if matches!(self.rotation, 90 | 270) {
+            self.strip_landscape
+        } else {
+            self.strip_portrait
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +304,8 @@ mod tests {
         assert_eq!(cfg.fb_dev, "/dev/fb1");
         assert_eq!(cfg.status_text_portrait, StatusText::Normal);
         assert_eq!(cfg.bar_gap_landscape, BarGap::Default);
+        assert_eq!(cfg.strip_portrait, Strip::Progress);
+        assert_eq!(cfg.strip_landscape, Strip::Progress);
     }
 
     #[test]
@@ -322,13 +358,17 @@ mod tests {
             "status_text_portrait = \"large\"\n\
              status_text_landscape = \"normal\"\n\
              bar_gap_portrait = \"roomy\"\n\
-             bar_gap_landscape = \"tight\"\n",
+             bar_gap_landscape = \"tight\"\n\
+             strip_portrait = \"off\"\n\
+             strip_landscape = \"stream\"\n",
         );
         let cfg = Config::load(f.path()).unwrap();
         assert_eq!(cfg.status_text_portrait, StatusText::Large);
         assert_eq!(cfg.status_text_landscape, StatusText::Normal);
         assert_eq!(cfg.bar_gap_portrait, BarGap::Roomy);
         assert_eq!(cfg.bar_gap_landscape, BarGap::Tight);
+        assert_eq!(cfg.strip_portrait, Strip::Off);
+        assert_eq!(cfg.strip_landscape, Strip::Stream);
     }
 
     #[test]
@@ -336,6 +376,8 @@ mod tests {
         let f = write("bar_gap_portrait = \"12px\"\n");
         assert!(Config::load(f.path()).is_err());
         let f = write("status_text_landscape = \"huge\"\n");
+        assert!(Config::load(f.path()).is_err());
+        let f = write("strip_portrait = \"pcm\"\n");
         assert!(Config::load(f.path()).is_err());
     }
 

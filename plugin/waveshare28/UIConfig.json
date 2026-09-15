@@ -60,7 +60,9 @@
           "status_text_portrait",
           "status_text_landscape",
           "bar_gap_portrait",
-          "bar_gap_landscape"
+          "bar_gap_landscape",
+          "strip_portrait",
+          "strip_landscape"
         ]
       },
       "content": [
@@ -186,6 +188,36 @@
             { "value": "tight", "label": "TRANSLATE.BAR_GAP_TIGHT" },
             { "value": "default", "label": "TRANSLATE.BAR_GAP_DEFAULT" },
             { "value": "roomy", "label": "TRANSLATE.BAR_GAP_ROOMY" }
+          ]
+        },
+        {
+          "id": "strip_portrait",
+          "element": "select",
+          "label": "TRANSLATE.STRIP_PORTRAIT",
+          "doc": "TRANSLATE.STRIP_DOC",
+          "value": {
+            "value": "progress",
+            "label": "TRANSLATE.STRIP_PROGRESS"
+          },
+          "options": [
+            { "value": "progress", "label": "TRANSLATE.STRIP_PROGRESS" },
+            { "value": "stream", "label": "TRANSLATE.STRIP_STREAM" },
+            { "value": "off", "label": "TRANSLATE.STRIP_OFF" }
+          ]
+        },
+        {
+          "id": "strip_landscape",
+          "element": "select",
+          "label": "TRANSLATE.STRIP_LANDSCAPE",
+          "doc": "TRANSLATE.STRIP_DOC",
+          "value": {
+            "value": "progress",
+            "label": "TRANSLATE.STRIP_PROGRESS"
+          },
+          "options": [
+            { "value": "progress", "label": "TRANSLATE.STRIP_PROGRESS" },
+            { "value": "stream", "label": "TRANSLATE.STRIP_STREAM" },
+            { "value": "off", "label": "TRANSLATE.STRIP_OFF" }
           ]
         }
       ]

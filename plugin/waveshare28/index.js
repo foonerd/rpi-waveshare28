@@ -22,7 +22,9 @@ const SETTINGS_BACKUP_KEYS = [
   'status_text_portrait',
   'status_text_landscape',
   'bar_gap_portrait',
-  'bar_gap_landscape'
+  'bar_gap_landscape',
+  'strip_portrait',
+  'strip_landscape'
 ];
 const PLUGIN_VERSION = require('./package.json').version;
 
@@ -287,6 +289,12 @@ Waveshare28.prototype.getUIConfig = function () {
       setField(settings, 'bar_gap_landscape', function (item) {
         setSelect(item, state.bar_gap_landscape || 'default');
       });
+      setField(settings, 'strip_portrait', function (item) {
+        setSelect(item, state.strip_portrait || 'progress');
+      });
+      setField(settings, 'strip_landscape', function (item) {
+        setSelect(item, state.strip_landscape || 'progress');
+      });
 
       if (!params.hdmi) {
         removeFields(settings, ['hdmi']);
@@ -351,6 +359,8 @@ Waveshare28.prototype.saveSettings = function (data) {
     const statusLandscape = fieldValue(data, 'status_text_landscape');
     const barGapPortrait = fieldValue(data, 'bar_gap_portrait');
     const barGapLandscape = fieldValue(data, 'bar_gap_landscape');
+    const stripPortrait = fieldValue(data, 'strip_portrait');
+    const stripLandscape = fieldValue(data, 'strip_landscape');
     if (statusPortrait !== undefined) {
       args.push('status_text_portrait=' + statusPortrait);
     }
@@ -362,6 +372,12 @@ Waveshare28.prototype.saveSettings = function (data) {
     }
     if (barGapLandscape !== undefined) {
       args.push('bar_gap_landscape=' + barGapLandscape);
+    }
+    if (stripPortrait !== undefined) {
+      args.push('strip_portrait=' + stripPortrait);
+    }
+    if (stripLandscape !== undefined) {
+      args.push('strip_landscape=' + stripLandscape);
     }
     if (args.length === 0) {
       defer.resolve();
@@ -616,6 +632,12 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   const barGapLandscape = values.bar_gap_landscape == null || values.bar_gap_landscape === ''
     ? 'default'
     : values.bar_gap_landscape;
+  const stripPortrait = values.strip_portrait == null || values.strip_portrait === ''
+    ? 'progress'
+    : values.strip_portrait;
+  const stripLandscape = values.strip_landscape == null || values.strip_landscape === ''
+    ? 'progress'
+    : values.strip_landscape;
   if (statusPortrait !== 'normal' && statusPortrait !== 'large') {
     return { ok: false, message: 'That settings backup has an invalid status_text_portrait.' };
   }
@@ -628,6 +650,12 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   if (barGapLandscape !== 'tight' && barGapLandscape !== 'default' && barGapLandscape !== 'roomy') {
     return { ok: false, message: 'That settings backup has an invalid bar_gap_landscape.' };
   }
+  if (stripPortrait !== 'progress' && stripPortrait !== 'stream' && stripPortrait !== 'off') {
+    return { ok: false, message: 'That settings backup has an invalid strip_portrait.' };
+  }
+  if (stripLandscape !== 'progress' && stripLandscape !== 'stream' && stripLandscape !== 'off') {
+    return { ok: false, message: 'That settings backup has an invalid strip_landscape.' };
+  }
   return {
     ok: true,
     values: {
@@ -639,7 +667,9 @@ Waveshare28.prototype.validateBackupValues = function (values) {
       status_text_portrait: statusPortrait,
       status_text_landscape: statusLandscape,
       bar_gap_portrait: barGapPortrait,
-      bar_gap_landscape: barGapLandscape
+      bar_gap_landscape: barGapLandscape,
+      strip_portrait: stripPortrait,
+      strip_landscape: stripLandscape
     }
   };
 };
@@ -744,7 +774,9 @@ Waveshare28.prototype.restoreSettingsBackup = function (data) {
       'status_text_portrait=' + v.status_text_portrait,
       'status_text_landscape=' + v.status_text_landscape,
       'bar_gap_portrait=' + v.bar_gap_portrait,
-      'bar_gap_landscape=' + v.bar_gap_landscape
+      'bar_gap_landscape=' + v.bar_gap_landscape,
+      'strip_portrait=' + v.strip_portrait,
+      'strip_landscape=' + v.strip_landscape
     ];
     if (v.backend === 'framebuffer') {
       args.push('console=' + v.console);

@@ -23,7 +23,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use art::{Art, ArtLoader};
-use config::Config;
+use config::{Config, Strip};
 use display::Panel;
 use net::{HostInfo, NetMonitor};
 use state::{poll_system_status, Command, CommandSink, PlayerState, StateSource, SystemStatus};
@@ -246,7 +246,7 @@ fn run(cfg: Config) -> Result<()> {
         // repainted in place instead.
         match shown.as_ref() {
             Some(prev) if prev.same_scene(&current) => {
-                if prev.seek != current.seek {
+                if prev.seek != current.seek && layout.strip == Strip::Progress {
                     panel.render_progress(&current)?;
                 }
                 if prev.volume != current.volume || prev.mute != current.mute {

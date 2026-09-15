@@ -165,6 +165,8 @@ Defaults, used when the file is absent or a key is omitted:
     status_text_landscape=normal
     bar_gap_portrait=default
     bar_gap_landscape=default
+    strip_portrait=progress
+    strip_landscape=progress
 
 ### `rotation`
 
@@ -315,6 +317,33 @@ orientation rule as status text. Live after `apply`; no reboot.
 
     sudo waveshare28-config set bar_gap_landscape=roomy
 
+### `strip_portrait` / `strip_landscape`
+
+`progress`, `stream` or `off`. What occupies the slot between the
+volume slider and the transport buttons.
+
+`progress` (default) is a 6 px bar with elapsed on the left and
+total on the right, the same clocks as the Web player. It paints
+only when `getState` publishes a duration greater than zero: local,
+DLNA, network, and sources that author per-track length (Radio
+Paradise RP2). Live MPD webradio (Selection Classic FM, Radio
+Paradise AAC) sends duration 0 and the slot stays blank. The volume
+slider keeps a speaker mark and the orange fill so the two rows
+cannot be mistaken for each other.
+
+`stream` paints IN format from the fields the source already wrote:
+`trackType` or `codec`, `bitdepth`, `samplerate`, `bitrate`. Service
+names such as `webradio` are not a codec and are skipped. Nothing is
+invented when those fields are empty, and ALSA OUT is not in
+`getState`.
+
+`off` leaves the slot blank.
+
+The active key is the one that matches `rotation`. Live after
+`apply`; no reboot. Transport, title and artist do not move.
+
+    sudo waveshare28-config set strip_landscape=stream
+
 ---
 
 ## What `apply` writes
@@ -403,6 +432,8 @@ The generated toml is only what the renderer needs from these keys:
     status_text_landscape = "normal"
     bar_gap_portrait = "default"
     bar_gap_landscape = "default"
+    strip_portrait = "progress"
+    strip_landscape = "progress"
 
 `fb_dev` is written only when `fb_st7789v` is already registered, so
 `apply` cannot replace a working panel path with `/dev/fb1`. The
@@ -459,10 +490,10 @@ Renderer owns the bus, no splash on this panel:
 
     sudo waveshare28-config set rotation=270 backend=spi
 
-Larger status text and more space between the slider and the progress
-bar, on a landscape mount:
+Larger status text, more space between the slider and the progress
+bar, and stream IN on a landscape mount:
 
-    sudo waveshare28-config set status_text_landscape=large bar_gap_landscape=roomy
+    sudo waveshare28-config set status_text_landscape=large bar_gap_landscape=roomy strip_landscape=stream
 
 After a kernel OTA that has dropped `fbcon=`:
 
@@ -492,7 +523,7 @@ that `detect` says apply:
 | Control | Who sees it |
 |---|---|
 | rotation, speed, backend | all supported Pi |
-| status text, bar spacing | all supported Pi; one pair per orientation |
+| status text, bar spacing, track strip | all supported Pi; one pair per orientation |
 | console | `backend=framebuffer` |
 | hdmi | Pi 4 family and `backend=framebuffer` |
 | 3A+ KMS | read-only status on 3A+ only |
@@ -508,16 +539,16 @@ a factory reset or a re-apply of the same framebuffer keys:
 would only toast "Settings applied." Enable (`onStart`) runs `apply`
 and offers a reboot only when `reboot_required` is true (framebuffer
 overlay not live). Default `backend=spi` does not reboot. `console=`
-only rewrites the unit. Status text and bar spacing rewrite the toml
+only rewrites the unit. Status text, bar spacing and track strip rewrite the toml
 and restart the unit; they do not reboot. Disabling the plugin calls
 `recover` and keeps `/boot/waveshare28.conf`.
 
 Named settings backups (Soloist-style) live in
 `/data/INTERNAL/waveshare28/backups`. Create, restore and delete are
 on the plugin page. Restore runs the same `set` checks as Apply.
-Schema stays 1: backups written before the layout keys omit them and
-restore those four as the shipped defaults. Those files survive plugin
-uninstall; they do not survive a factory reset.
+Schema stays 1: backups written before the layout or strip keys omit
+them and restore those as the shipped defaults. Those files survive
+plugin uninstall; they do not survive a factory reset.
 `/boot/waveshare28.conf` is still the durable live copy.
 
 Sudoers is `/etc/sudoers.d/volumio-waveshare28` (`volumio-<plugin_name>`).

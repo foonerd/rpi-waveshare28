@@ -104,6 +104,8 @@ status_text_portrait=normal
 status_text_landscape=normal
 bar_gap_portrait=default
 bar_gap_landscape=default
+strip_portrait=progress
+strip_landscape=progress
 # Set when the durable file itself contained the key. Used to warn when
 # the key cannot apply, not because of the default.
 console_set=0
@@ -149,6 +151,13 @@ validate_bar_gap() {
     case "$1" in
         tight|default|roomy) ;;
         *) die "bar_gap must be tight, default or roomy, got '$1'" ;;
+    esac
+}
+
+validate_strip() {
+    case "$1" in
+        progress|stream|off) ;;
+        *) die "strip must be progress, stream or off, got '$1'" ;;
     esac
 }
 
@@ -404,6 +413,8 @@ load_conf() {
             status_text_landscape) status_text_landscape="$value" ;;
             bar_gap_portrait)      bar_gap_portrait="$value" ;;
             bar_gap_landscape)     bar_gap_landscape="$value" ;;
+            strip_portrait)        strip_portrait="$value" ;;
+            strip_landscape)       strip_landscape="$value" ;;
             splash)   warn "'splash' is obsolete; use backend=framebuffer" ;;
             *)        warn "ignoring unknown key in ${CONF}: ${key}" ;;
         esac
@@ -449,6 +460,11 @@ status_text_landscape=${status_text_landscape}
 # never from the transport strip.
 bar_gap_portrait=${bar_gap_portrait}
 bar_gap_landscape=${bar_gap_landscape}
+
+# Volume-to-transport slot. progress is the shipped bar. stream is IN
+# format from getState. off leaves the slot blank.
+strip_portrait=${strip_portrait}
+strip_landscape=${strip_landscape}
 EOF
     log "wrote ${CONF}"
 }
@@ -745,6 +761,8 @@ status_text_portrait = "${status_text_portrait}"
 status_text_landscape = "${status_text_landscape}"
 bar_gap_portrait = "${bar_gap_portrait}"
 bar_gap_landscape = "${bar_gap_landscape}"
+strip_portrait = "${strip_portrait}"
+strip_landscape = "${strip_landscape}"
 EOF
     log "wrote ${TOML}"
 }
@@ -876,6 +894,8 @@ cmd_apply() {
     validate_status_text "$status_text_landscape"
     validate_bar_gap "$bar_gap_portrait"
     validate_bar_gap "$bar_gap_landscape"
+    validate_strip "$strip_portrait"
+    validate_strip "$strip_landscape"
     if ! [[ "$speed" =~ ^[0-9]+$ ]] || [[ "$speed" -le 0 ]]; then
         die "speed must be a positive number, got '${speed}'"
     fi
@@ -965,6 +985,8 @@ cmd_set() {
             status_text_landscape) status_text_landscape="$value" ;;
             bar_gap_portrait)      bar_gap_portrait="$value" ;;
             bar_gap_landscape)     bar_gap_landscape="$value" ;;
+            strip_portrait)        strip_portrait="$value" ;;
+            strip_landscape)       strip_landscape="$value" ;;
             *)        die "unknown setting: ${key}" ;;
         esac
     done
@@ -977,6 +999,8 @@ cmd_set() {
     validate_status_text "$status_text_landscape"
     validate_bar_gap "$bar_gap_portrait"
     validate_bar_gap "$bar_gap_landscape"
+    validate_strip "$strip_portrait"
+    validate_strip "$strip_landscape"
     save_conf
     cmd_apply
 }
@@ -999,6 +1023,8 @@ cmd_show_json() {
     printf '"status_text_landscape":%s,' "$(json_str "$status_text_landscape")"
     printf '"bar_gap_portrait":%s,' "$(json_str "$bar_gap_portrait")"
     printf '"bar_gap_landscape":%s,' "$(json_str "$bar_gap_landscape")"
+    printf '"strip_portrait":%s,' "$(json_str "$strip_portrait")"
+    printf '"strip_landscape":%s,' "$(json_str "$strip_landscape")"
     printf '"console_set":%s,' "$(json_bool "$console_set")"
     printf '"hdmi_set":%s,' "$(json_bool "$hdmi_set")"
     printf '"source":%s,' "$(json_str "$source")"
@@ -1036,6 +1062,7 @@ cmd_show() {
     printf 'backend  = %s\n' "$backend"
     printf 'status   = portrait=%s landscape=%s\n' "$status_text_portrait" "$status_text_landscape"
     printf 'bar_gap  = portrait=%s landscape=%s\n' "$bar_gap_portrait" "$bar_gap_landscape"
+    printf 'strip    = portrait=%s landscape=%s\n' "$strip_portrait" "$strip_landscape"
     if [[ "$backend" == framebuffer ]]; then
         printf 'fbtft    = rotate=%s (counter-clockwise)\n' "$(fbtft_rotate "$rotation")"
         local fb_dev map
@@ -1176,6 +1203,10 @@ cmd_verify() {
         "$(grep -qxF "bar_gap_portrait = \"${bar_gap_portrait}\"" "$TOML" 2>/dev/null && echo y)"
     check "${TOML} matches bar_gap_landscape" \
         "$(grep -qxF "bar_gap_landscape = \"${bar_gap_landscape}\"" "$TOML" 2>/dev/null && echo y)"
+    check "${TOML} matches strip_portrait" \
+        "$(grep -qxF "strip_portrait = \"${strip_portrait}\"" "$TOML" 2>/dev/null && echo y)"
+    check "${TOML} matches strip_landscape" \
+        "$(grep -qxF "strip_landscape = \"${strip_landscape}\"" "$TOML" 2>/dev/null && echo y)"
     if [[ "$backend" == framebuffer ]]; then
         local fb_dev
         if fb_dev="$(panel_fb_dev)"; then
