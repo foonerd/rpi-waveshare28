@@ -359,7 +359,8 @@ Transport, title and artist do not move.
 
 `ink`, `dusk`, `studio` or `night`. Colour tokens for the panel.
 Not a CSS engine: each name is a fixed RGB565 set (ADR-0020 table
-words).
+words). Type, spacing and face boxes are [`UI.md`](UI.md) — they do
+not live in this key.
 
 `ink` (default) is the shipped black ground, white title, light-gray
 meta, dim-gray trough, orange volume fill, red mute.
