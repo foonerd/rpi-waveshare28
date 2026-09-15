@@ -20,10 +20,11 @@ use mipidsi::options::{ColorInversion, Orientation, Rotation};
 use mipidsi::{Builder, Display};
 
 use crate::art::Art;
-use crate::config::{Backend, Config};
+use crate::config::{Backend, Config, Strip};
 use crate::fbdev::{resolve_fb_dev, FbDev};
 use crate::net::HostInfo;
 use crate::state::PlayerState;
+use crate::surface;
 use crate::ui::{self, Layout, TextPane};
 
 /// Consumer label reported in `gpioinfo`, so a stuck line is traceable to
@@ -121,6 +122,11 @@ impl Panel {
         &self.layout
     }
 
+    /// In-RAM strip cycle. Restart still uses the config key.
+    pub fn set_strip(&mut self, strip: Strip) {
+        self.layout.strip = strip;
+    }
+
     /// Turn the backlight on or off.
     ///
     /// GPIO only, and only on the SPI backend. fbtft already owns GPIO18; its
@@ -134,19 +140,20 @@ impl Panel {
             .map_err(|e| anyhow!("setting backlight: {e:?}"))
     }
 
-    /// Redraw the whole screen for the given state.
+    /// Redraw the whole resting face for the given state.
     pub fn render(
         &mut self,
         state: &PlayerState,
         art: Option<&Art>,
         pane: &TextPane,
+        scrub: Option<f32>,
     ) -> Result<()> {
-        on_surface!(self, |s| ui::draw(s, &self.layout, state, art, pane))
+        on_surface!(self, |s| ui::draw(s, &self.layout, state, art, pane, scrub))
     }
 
-    /// Repaint the album art only.
-    pub fn render_art(&mut self, art: Option<&Art>) -> Result<()> {
-        on_surface!(self, |s| ui::draw_art(s, &self.layout, art))
+    /// Repaint the title block only. A ticker step must not clear the face.
+    pub fn render_rows(&mut self, pane: &TextPane) -> Result<()> {
+        on_surface!(self, |s| ui::draw_rows(s, &self.layout, pane))
     }
 
     /// Draw the status screen shown before the player is available.
@@ -159,19 +166,40 @@ impl Panel {
         self.layout.art.size.width.min(self.layout.art.size.height)
     }
 
-    /// Repaint the text pane only.
-    pub fn render_rows(&mut self, pane: &TextPane) -> Result<()> {
-        on_surface!(self, |s| ui::draw_rows(s, &self.layout, pane))
-    }
-
-    /// Repaint the progress bar only.
+    /// Repaint the seek / stream strip only.
     pub fn render_progress(&mut self, state: &PlayerState) -> Result<()> {
-        on_surface!(self, |s| ui::draw_progress(s, &self.layout, state))
+        on_surface!(self, |s| ui::draw_progress(s, &self.layout, state, None))
     }
 
-    /// Repaint the volume slider only.
-    pub fn render_volume(&mut self, state: &PlayerState) -> Result<()> {
-        on_surface!(self, |s| ui::draw_volume(s, &self.layout, state))
+    /// Repaint the Controls seek band only. Do not clear the surface.
+    pub fn render_controls_seek(&mut self, state: &PlayerState) -> Result<()> {
+        on_surface!(self, |s| surface::draw_controls_seek(
+            s,
+            &self.layout,
+            state,
+            None
+        ))
+    }
+
+    /// Draw a transient surface over the whole frame.
+    pub fn render_surface(
+        &mut self,
+        kind: surface::Surface,
+        state: &PlayerState,
+        art: Option<&Art>,
+        host: &HostInfo,
+        scrub: Option<f32>,
+        remain: u8,
+    ) -> Result<()> {
+        on_surface!(self, |s| {
+            surface::draw(s, &self.layout, kind, state, art, host, scrub)?;
+            surface::draw_hold(s, &self.layout, remain)
+        })
+    }
+
+    /// Repaint the hold countdown only. Do not clear the surface.
+    pub fn render_hold(&mut self, remain: u8) -> Result<()> {
+        on_surface!(self, |s| surface::draw_hold(s, &self.layout, remain))
     }
 }
 

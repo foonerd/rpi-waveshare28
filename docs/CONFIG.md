@@ -82,9 +82,11 @@ Prints the loaded settings. No root. A missing durable file is not an
 error: defaults are used and `source` says so. `show --json` is the
 same data plus the `detect` object, for the plugin. It also reports
 `device` (live `fb_st7789v` or SPI path) and `reboot_required`.
-`reboot_required` is true only for `backend=framebuffer` when
-`fb_st7789v` is not on this boot. A missing `/dev/spidev0.0` is not
-a reboot: Pi 5 names that bus `/dev/spidev10.0`.
+`reboot_required` is true for `backend=framebuffer` when
+`fb_st7789v` is not on this boot, or when it is live but its
+`virtual_size` does not match this rotation (fbtft sizes the node
+at boot). A missing `/dev/spidev0.0` is not a reboot: Pi 5 names
+that bus `/dev/spidev10.0`.
 
 ### `detect`
 
@@ -96,11 +98,17 @@ family. 3A+ KMS is a status string, not a switch.
 
 ### `set key=value...`
 
-Writes the durable file, then runs `apply`. Several keys on one line are
+Writes the durable file, then applies. Several keys on one line are
 applied together, so a backend and a rotation cannot be half-written.
+
+Live keys (`status_text_*`, `bar_gap_*`, `strip_*`, `theme`) rewrite
+the toml and restart the unit only. They do not touch `userconfig.txt`
+or `cmdline.txt`. Any other key, or a mix of live and overlay keys,
+runs a full `apply`.
 
     sudo waveshare28-config set rotation=270
     sudo waveshare28-config set backend=framebuffer console=release
+    sudo waveshare28-config set strip_landscape=stream
 
 Unknown keys are refused. A typo does not become a silent no-op.
 
@@ -165,6 +173,9 @@ Defaults, used when the file is absent or a key is omitted:
     status_text_landscape=normal
     bar_gap_portrait=default
     bar_gap_landscape=default
+    strip_portrait=progress
+    strip_landscape=progress
+    theme=ink
 
 ### `rotation`
 
@@ -189,7 +200,9 @@ as people usually mount it, is `rotation=270` / `dtparam=rotate=90`.
 
 On `backend=framebuffer` the framebuffer size must match that layout or
 the renderer refuses to open. Changing rotation after a framebuffer boot
-needs a reboot: fbtft has already sized the panel node.
+needs a reboot: fbtft has already sized the panel node. `apply` then
+stops the unit, leaves it enabled, and sets `reboot_required` instead
+of starting a crash loop.
 
 ### `speed`
 
@@ -266,7 +279,7 @@ stops.
 
 **`share`** — fbcon stays bound. Kernel messages and a getty redraw of
 the QR overwrite the player. The renderer is still running; the next
-scene change (or a cover tap) paints it back.
+scene change (or closing a surface) paints it back.
 
 The panel runs as `volumio` and cannot write sysfs. The unit uses
 `ExecStartPre=` / `ExecStopPost=` with `+` so those two writes run as
@@ -291,29 +304,87 @@ onto a Pi 5 cannot turn that board's HDMI off.
 
 ### `status_text_portrait` / `status_text_landscape`
 
-`normal` or `large`. Status screen only: hostname, addresses, and the
-startup footer. Player title and artist stay on the stock faces.
+`normal` or `large`. Boot overlay only: hostname, addresses, and the
+startup footer. The Status surface after the player is up always uses
+`FONT_10X20`. Player title stays on the stock faces.
 
 `large` is the biggest stock mono face (`FONT_10X20`). A literal 2× of
 the address face is 468 px for a 39-character IPv6 address, which does
 not fit either frame. Large mode wraps; it does not scale one line.
 
 The active key is the one that matches `rotation`: portrait for 0 and
-180, landscape for 90 and 270. Changing either is live: `apply`
-rewrites the toml and restarts the unit. No reboot.
+180, landscape for 90 and 270. A status-text-only `set` is live: toml
+and unit restart, no overlay rewrite, no reboot.
 
     sudo waveshare28-config set status_text_landscape=large
 
 ### `bar_gap_portrait` / `bar_gap_landscape`
 
-`tight`, `default` or `roomy`. Vertical space between the volume slider
-and the progress bar. Named steps, not pixels.
-
-Extra room is taken from album art, never from the transport strip
-(40 px hit targets). Defaults match the shipped layout. Same
-orientation rule as status text. Live after `apply`; no reboot.
+`tight`, `default` or `roomy`. Kept as a durable key so a typo is
+refused. Face compose ignores it: A.1 / A.2 set the face boxes.
+A bar-gap-only `set` is still live: toml and unit restart, no
+overlay rewrite, no reboot. The gap on glass does not move.
 
     sudo waveshare28-config set bar_gap_landscape=roomy
+
+### `strip_portrait` / `strip_landscape`
+
+`progress`, `stream` or `off`. What occupies the seek slot on the
+resting face.
+
+`progress` (default) is a 3 px bar with elapsed on the left and
+total on the right, the same clocks as the Web player, plus a 4×12
+knob. A drag seeks on release; a tap cycles Progress / Stream.
+It paints only when `getState` publishes a duration greater than
+zero: local, DLNA, network, and sources that author per-track
+length (Radio Paradise RP2). Live MPD webradio (Selection Classic
+FM, Radio Paradise AAC) sends duration 0 and the slot stays blank.
+Volume lives on the dock and the Volume surface (accent fill), so
+the two cannot be mistaken for each other.
+
+`stream` paints IN format from the fields the source already wrote:
+`trackType` or `codec`, `bitdepth`, `samplerate`, `bitrate`. Service
+names such as `webradio` are not a codec and are skipped. Nothing is
+invented when those fields are empty, and ALSA OUT is not in
+`getState`.
+
+`off` hides the slot and grows art into that band.
+
+The active key is the one that matches `rotation`. A strip-only
+`set` is live: toml and unit restart, no overlay rewrite, no reboot.
+Transport, title and artist do not move.
+
+    sudo waveshare28-config set strip_landscape=stream
+
+### `theme`
+
+`ink`, `dusk`, `studio` or `night`. Colour tokens for the panel.
+Not a CSS engine: each name is a fixed RGB565 set (ADR-0020 table
+words). Type, spacing and face boxes are [`UI.md`](UI.md) — they do
+not live in this key.
+
+`ink` (default) is the shipped black ground, white title, light-gray
+meta, dim-gray trough, orange volume fill, red mute.
+
+`dusk` is dark roast: brown ground, cream type, amber volume.
+
+`studio` is deep navy, ice type, blue volume.
+
+`night` is amber type on a near-black ground; volume fill is pale
+cream. Do not brighten its ground.
+
+Cover art does not recolour. The tokens show on the ground around
+the text and bars, the title and artist, the clocks, the transport
+labels, and the volume fill. The bar that changes colour is volume
+(accent). Progress fill follows the title colour. Status (the `i`
+ring) and the Artwork surface are the loudest views of the ground.
+Geometry, strip occupancy and fonts do not move.
+
+A theme-only `set` is live: toml and unit restart, no overlay
+rewrite, no reboot. Geometry, strip occupancy and fonts do not move.
+
+    sudo waveshare28-config set theme=dusk
+    sudo waveshare28-config set theme=night
 
 ---
 
@@ -403,6 +474,9 @@ The generated toml is only what the renderer needs from these keys:
     status_text_landscape = "normal"
     bar_gap_portrait = "default"
     bar_gap_landscape = "default"
+    strip_portrait = "progress"
+    strip_landscape = "progress"
+    theme = "ink"
 
 `fb_dev` is written only when `fb_st7789v` is already registered, so
 `apply` cannot replace a working panel path with `/dev/fb1`. The
@@ -459,10 +533,10 @@ Renderer owns the bus, no splash on this panel:
 
     sudo waveshare28-config set rotation=270 backend=spi
 
-Larger status text and more space between the slider and the progress
-bar, on a landscape mount:
+Larger boot-overlay type and stream IN on a landscape mount:
 
-    sudo waveshare28-config set status_text_landscape=large bar_gap_landscape=roomy
+    sudo waveshare28-config set status_text_landscape=large strip_landscape=stream
+    sudo waveshare28-config set theme=night
 
 After a kernel OTA that has dropped `fbcon=`:
 
@@ -480,7 +554,7 @@ plugin installer does not: enable (`onStart`) calls `apply`.
 `plugin/waveshare28` is store-shaped (`system_controller`, category
 `system_hardware`, armhf, Bookworm).
 `install.sh` copies `payload/waveshare28-config` and
-`payload/bin/armhf/waveshare28-panel` (runtime-v1.2.0 musleabihf) into
+`payload/bin/armhf/waveshare28-panel` (crate 1.6.0 musleabihf) into
 `/usr/local/bin` and writes sudoers. It does not run `apply` and does
 not start the panel unit. Enabling the plugin (`onStart`) runs `apply`.
 Disabling it (`onStop`) runs `recover`. Enabling with the tool missing
@@ -491,8 +565,8 @@ that `detect` says apply:
 
 | Control | Who sees it |
 |---|---|
-| rotation, speed, backend | all supported Pi |
-| status text, bar spacing | all supported Pi; one pair per orientation |
+| rotation, speed, backend | Panel section; all supported Pi |
+| theme, status text, bar spacing, track strip | UI section; all supported Pi; type and strip are one pair per orientation |
 | console | `backend=framebuffer` |
 | hdmi | Pi 4 family and `backend=framebuffer` |
 | 3A+ KMS | read-only status on 3A+ only |
@@ -508,16 +582,17 @@ a factory reset or a re-apply of the same framebuffer keys:
 would only toast "Settings applied." Enable (`onStart`) runs `apply`
 and offers a reboot only when `reboot_required` is true (framebuffer
 overlay not live). Default `backend=spi` does not reboot. `console=`
-only rewrites the unit. Status text and bar spacing rewrite the toml
-and restart the unit; they do not reboot. Disabling the plugin calls
+only rewrites the unit. Theme, status text, bar spacing and track strip
+(the UI section) rewrite the toml and restart the unit; they do not
+rewrite boot overlays and they do not reboot. Disabling the plugin calls
 `recover` and keeps `/boot/waveshare28.conf`.
 
 Named settings backups (Soloist-style) live in
 `/data/INTERNAL/waveshare28/backups`. Create, restore and delete are
 on the plugin page. Restore runs the same `set` checks as Apply.
-Schema stays 1: backups written before the layout keys omit them and
-restore those four as the shipped defaults. Those files survive plugin
-uninstall; they do not survive a factory reset.
+Schema stays 1: backups written before the layout or strip keys omit
+them and restore those as the shipped defaults. Those files survive
+plugin uninstall; they do not survive a factory reset.
 `/boot/waveshare28.conf` is still the durable live copy.
 
 Sudoers is `/etc/sudoers.d/volumio-waveshare28` (`volumio-<plugin_name>`).

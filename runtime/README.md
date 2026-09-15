@@ -49,12 +49,17 @@ for `volumio.service`. Without it the panel is dark for most of a minute, and
 the address is the one thing someone needs before the player is reachable.
 
 After `/status` is `ready` and the first `getState` succeeds, it shows the
-player: album art, wrapped
-title, artist and album, a volume slider, a progress bar and a transport
-strip. A tap on the cover shows the address screen for ten seconds, or
-until the next tap. A failed poll during a Volumio restart is transient,
-and reverting to an address list mid-listening would be worse than a
-slightly stale player.
+player: album art, a two-line title (portrait is title only; landscape
+still paints artist and album), a dock (controls / volume / metadata)
+and a seek slot. The slot defaults to elapsed / bar / total when
+`getState` publishes a duration; a tap cycles to IN stream fields
+(`strip_portrait` / `strip_landscape`). Colours come from a named theme
+(`theme`; default `ink`; also `dusk`, `studio`, `night`). The IP ring
+opens Status for ten seconds. Cover opens Artwork (or Metadata when
+there is no art). Dock cells open Controls, Volume and Metadata.
+A failed poll during a Volumio restart is transient, and reverting to
+an address list mid-listening would be worse than a slightly stale
+player.
 
 ## Layout
 
@@ -67,7 +72,8 @@ slightly stale player.
     src/net.rs      host addresses and network state
     src/state.rs    Volumio state polling and commands
     src/art.rs      album art fetch, decode and scale, on its own thread
-    src/ui.rs       layouts, drawing, hit regions
+    src/ui.rs       layouts, drawing, face hit regions
+    src/surface.rs  transient Controls / Volume / Metadata / Status / Artwork
     src/http.rs     minimal GET over TCP or TLS, no HTTP crate
 
 ## Build
@@ -142,7 +148,8 @@ not parse is an error.
 ## Status
 
 Runs on hardware. Display, touch, artwork including SVG and TLS, both layouts,
-the volume slider and the status screen are all exercised on a Pi 3A+.
+the dock, the surface stack and the status screen are all exercised on a
+Pi 3A+ and a Pi 5.
 
 Open defects are in `../DEFECTS.md`.
 

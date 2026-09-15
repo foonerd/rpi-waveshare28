@@ -8,7 +8,12 @@
 //!
 //! Coordinates are in the rotated frame, the same one the display driver
 //! presents. Touch coordinates arrive from the controller unrotated, so
-//! [`hit`] applies the inverse transform before testing.
+//! [`Layout::map`] is applied before hit testing.
+//!
+//! ADR-0020: resting face is display-only plus large hotspots.
+//! Type map, stock faces only: ~13/~11 bold → [`FONT_9X15_BOLD`]; ~9/~8/~7
+//! → [`FONT_6X10`]. The Status surface always uses [`FONT_10X20`]. The
+//! boot overlay uses that face when status text is large.
 
 use embedded_graphics::{
     mono_font::{
@@ -16,12 +21,12 @@ use embedded_graphics::{
     },
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::{Circle, Line, PrimitiveStyle, Rectangle, Triangle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
 use crate::art::Art;
-use crate::config::{BarGap, Config, StatusText};
+use crate::config::{BarGap, Config, StatusText, Strip, Theme};
 use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::touch::Touch;
@@ -31,8 +36,106 @@ pub const NATIVE_W: u16 = 240;
 /// Panel height in the controller's native frame.
 pub const NATIVE_H: u16 = 320;
 
-const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
-const META_FONT: &MonoFont = &FONT_6X10;
+/// Portrait dock / seek hits. Glyph 22 sits in 52 with 15 px pad — that
+/// pad is divider-to-icon; icon-to-seek matches it. Seek chrome sits at
+/// the top of the 32 px strip so the trough is not a second gap.
+const PORTRAIT_DOCK_H: u32 = 52;
+const PORTRAIT_SEEK_H: u32 = 32;
+/// Two TITLE_FONT lines (15+2+15) plus pad. Artist / album are off the face.
+const PORTRAIT_TITLE_H: u32 = 40;
+const PORTRAIT_ART_GAP: i32 = 10;
+/// Square whose right edge stays at the IP ring (x 214 → inset 26).
+const PORTRAIT_ART_MAX: u32 = 188;
+
+pub(crate) const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
+pub(crate) const META_FONT: &MonoFont = &FONT_6X10;
+
+/// Cabinet + cone. 12×10. The mark that was signed off on the volume strip.
+const SPEAKER_W: i32 = 12;
+const SPEAKER_H: i32 = 10;
+const SPEAKER_BODY: &[(u8, u8)] = &[
+    (0, 3),
+    (1, 3),
+    (0, 4),
+    (1, 4),
+    (0, 5),
+    (1, 5),
+    (0, 6),
+    (1, 6),
+    (2, 2),
+    (2, 3),
+    (2, 4),
+    (2, 5),
+    (2, 6),
+    (2, 7),
+    (3, 1),
+    (3, 2),
+    (3, 3),
+    (3, 4),
+    (3, 5),
+    (3, 6),
+    (3, 7),
+    (3, 8),
+    (4, 0),
+    (4, 1),
+    (4, 2),
+    (4, 3),
+    (4, 4),
+    (4, 5),
+    (4, 6),
+    (4, 7),
+    (4, 8),
+    (4, 9),
+];
+const SPEAKER_WAVES: &[(u8, u8)] = &[
+    (6, 2),
+    (7, 3),
+    (7, 6),
+    (6, 7),
+    (8, 1),
+    (9, 2),
+    (10, 3),
+    (10, 6),
+    (9, 7),
+    (8, 8),
+];
+const SPEAKER_MUTE_X: &[(u8, u8)] = &[
+    (6, 1),
+    (7, 2),
+    (8, 3),
+    (9, 4),
+    (10, 5),
+    (11, 6),
+    (6, 2),
+    (7, 3),
+    (8, 4),
+    (9, 5),
+    (10, 6),
+    (11, 7),
+    (11, 1),
+    (10, 2),
+    (9, 3),
+    (8, 4),
+    (7, 5),
+    (6, 6),
+    (11, 2),
+    (10, 3),
+    (9, 4),
+    (8, 5),
+    (7, 6),
+    (6, 7),
+];
+
+/// Map a point on a seek strip to 0..1, padded 12 px each end.
+pub fn seek_fraction(slot: Rectangle, p: Point) -> f32 {
+    let pad = 12i32;
+    let x0 = slot.top_left.x + pad;
+    let w = slot.size.width as i32 - pad * 2;
+    if w <= 0 {
+        return 0.0;
+    }
+    ((p.x - x0) as f32 / w as f32).clamp(0.0, 1.0)
+}
 
 /// Where everything sits, for one orientation.
 ///
@@ -53,16 +156,77 @@ pub struct Layout {
     pub frame: Rectangle,
     /// Album art.
     pub art: Rectangle,
-    /// Track text: title, artist, album, wrapped and centred.
+    /// Title block (portrait: title only). Tap opens metadata.
     pub text: Rectangle,
-    /// Volume slider.
-    pub volume: Rectangle,
-    /// Playback progress bar.
+    /// IP ring hit target.
+    pub info: Rectangle,
+    /// Three-slot glyph dock.
+    pub dock: Rectangle,
+    /// Seek / stream strip. Empty height when `strip` is Off.
     pub progress: Rectangle,
-    /// Transport strip, split into equal thirds.
-    pub transport: Rectangle,
     /// Status-screen type for this orientation.
     pub status_text: StatusText,
+    /// What occupies the volume-to-transport slot.
+    pub strip: Strip,
+    /// Colour tokens for this paint.
+    pub theme: Theme,
+}
+
+/// Named colours for one theme. Ink matches the shipped CSS constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub bg: Rgb565,
+    pub title: Rgb565,
+    pub meta: Rgb565,
+    pub dim: Rgb565,
+    pub accent: Rgb565,
+    pub danger: Rgb565,
+}
+
+/// ADR-0020 table word. The hex is the contract; do not re-derive with `>>`.
+const fn word(w: u16) -> Rgb565 {
+    Rgb565::new(
+        ((w >> 11) & 0x1f) as u8,
+        ((w >> 5) & 0x3f) as u8,
+        (w & 0x1f) as u8,
+    )
+}
+
+pub fn palette(theme: Theme) -> Palette {
+    match theme {
+        Theme::Ink => Palette {
+            bg: Rgb565::BLACK,
+            title: Rgb565::WHITE,
+            meta: Rgb565::CSS_LIGHT_GRAY,
+            dim: Rgb565::CSS_DIM_GRAY,
+            accent: Rgb565::CSS_ORANGE,
+            danger: Rgb565::CSS_RED,
+        },
+        Theme::Dusk => Palette {
+            bg: word(0x30C1),
+            title: word(0xFEB5),
+            meta: word(0xD52E),
+            dim: word(0x9B07),
+            accent: word(0xFD85),
+            danger: word(0xFA87),
+        },
+        Theme::Studio => Palette {
+            bg: word(0x08C7),
+            title: word(0xDF5F),
+            meta: word(0x959A),
+            dim: word(0x5352),
+            accent: word(0x3DBF),
+            danger: word(0xFA4A),
+        },
+        Theme::Night => Palette {
+            bg: word(0x1040),
+            title: word(0xFD89),
+            meta: word(0xCC67),
+            dim: word(0x7264),
+            accent: word(0xFF57),
+            danger: word(0xF944),
+        },
+    }
 }
 
 fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
@@ -70,82 +234,110 @@ fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
 }
 
 impl Layout {
+    pub(crate) fn pal(&self) -> Palette {
+        palette(self.theme)
+    }
+
     /// Layout for a rotation in degrees. 0 and 180 are portrait, 90 and 270
     /// landscape. Default gap and status type; the missing-file path goes
     /// through [`Config::default`] and [`Self::from_config`].
     #[cfg(test)]
     pub fn for_rotation(rotation: u16) -> Self {
-        Self::compose(rotation, BarGap::Default, StatusText::Normal)
+        Self::compose(
+            rotation,
+            BarGap::Default,
+            StatusText::Normal,
+            Strip::Progress,
+            Theme::Ink,
+        )
     }
 
-    /// Layout for the configured rotation, gap and status type.
+    /// Layout for the configured rotation, gap, status type and strip.
     pub fn from_config(cfg: &Config) -> Self {
-        Self::compose(cfg.rotation, cfg.bar_gap(), cfg.status_text())
+        Self::compose(
+            cfg.rotation,
+            cfg.bar_gap(),
+            cfg.status_text(),
+            cfg.strip(),
+            cfg.theme,
+        )
     }
 
-    fn compose(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
+    fn compose(
+        rotation: u16,
+        _gap: BarGap,
+        status_text: StatusText,
+        strip: Strip,
+        theme: Theme,
+    ) -> Self {
+        // A.1 / A.2 boxes supersede bar-gap geometry. The key stays.
         match rotation {
-            90 | 270 => Self::landscape(rotation, gap, status_text),
-            _ => Self::portrait(rotation, gap, status_text),
+            90 | 270 => Self::landscape(rotation, status_text, strip, theme),
+            _ => Self::portrait(rotation, status_text, strip, theme),
         }
     }
 
-    /// 240 wide by 320 tall. Art on top, everything else stacked beneath.
-    ///
-    /// Transport stays at y 292. Extra bar gap moves the slider up; roomy
-    /// also shortens the art box by 4 px so the text block still fits.
-    fn portrait(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
-        let (art_h, text_y, vol_y, prog_y) = match gap {
-            BarGap::Tight => (200, 214, 270, 280),
-            BarGap::Default => (200, 214, 268, 280),
-            BarGap::Roomy => (196, 210, 260, 280),
+    /// Portrait face. Dock 52 / seek 32 stay the A.1 hits. Title only
+    /// (artist / album live on Metadata). Art is the leftover square,
+    /// capped so its right edge stays off the IP ring at x 214.
+    fn portrait(rotation: u16, status_text: StatusText, strip: Strip, theme: Theme) -> Self {
+        let seek_h = if strip != Strip::Off {
+            PORTRAIT_SEEK_H
+        } else {
+            0
         };
+        let dock_y = 320 - seek_h as i32 - PORTRAIT_DOCK_H as i32;
+        let text_y = dock_y - PORTRAIT_TITLE_H as i32;
+        let art_budget = (text_y - PORTRAIT_ART_GAP).max(0) as u32;
+        let art_side = art_budget.min(PORTRAIT_ART_MAX);
+        let art_x = (240 - art_side as i32) / 2;
         Self {
             rotation,
             frame: rect(0, 0, 240, 320),
-            art: rect(20, 8, 200, art_h),
-            text: rect(4, text_y, 232, 48),
-            volume: rect(10, vol_y, 220, 6),
-            progress: rect(10, prog_y, 220, 4),
-            transport: rect(0, 292, 240, 28),
+            art: rect(art_x, 0, art_side, art_side),
+            text: rect(12, text_y, 216, PORTRAIT_TITLE_H),
+            info: rect(192, 0, 48, 48),
+            dock: rect(0, dock_y, 240, PORTRAIT_DOCK_H),
+            progress: rect(0, dock_y + PORTRAIT_DOCK_H as i32, 240, seek_h),
             status_text,
+            strip,
+            theme,
         }
     }
 
-    /// 320 wide by 240 tall. Art on the left, text column on the right,
-    /// transport across the full width at the bottom.
-    ///
-    /// The transport is not in the column, which is the difference that
-    /// matters. At roughly 143 ppi a fingertip contact patch is 40 to 50
-    /// pixels, so three buttons in a 104 px column are 34 px wide: below the
-    /// point where they can be hit reliably, while occupying vertical space
-    /// they do not need. Full width makes them 106 by 40.
-    ///
-    /// The volume slider gains the same way. At 104 px one percent is one
-    /// pixel and the control is only good for coarse jumps; at 300 px it is
-    /// three pixels per percent and can actually be set.
-    ///
-    /// The cost is album art at 168 rather than 200. It is still by far the
-    /// largest element, and a slider that cannot be landed on is a worse
-    /// daily annoyance than 32 pixels of cover.
-    fn landscape(rotation: u16, gap: BarGap, status_text: StatusText) -> Self {
-        // Transport is pinned at y 200, height 40. Roomy steals 12 px from
-        // the art box; tight and default keep the 168 cover.
-        let (art_s, vol_y, prog_y) = match gap {
-            BarGap::Tight => (168, 178, 188),
-            BarGap::Default => (168, 178, 190),
-            BarGap::Roomy => (156, 168, 188),
+    /// ADR-0020 A.2. 320×240. Art 200, text column 120, dock 40×44,
+    /// seek 40 full width. Off grows art into the seek band.
+    fn landscape(rotation: u16, status_text: StatusText, strip: Strip, theme: Theme) -> Self {
+        let seek_on = strip != Strip::Off;
+        let (art_h, col_h, dock_y, seek_y, seek_h): (u32, u32, i32, i32, u32) = if seek_on {
+            (200, 200, 156, 200, 40)
+        } else {
+            (240, 240, 196, 240, 0)
         };
         Self {
             rotation,
             frame: rect(0, 0, 320, 240),
-            art: rect(10, 4, art_s, art_s),
-            text: rect(184, 4, 132, art_s),
-            volume: rect(10, vol_y, 300, 6),
-            progress: rect(10, prog_y, 300, 4),
-            transport: rect(0, 200, 320, 40),
+            art: rect(0, 0, 200, art_h),
+            text: rect(200, 0, 120, col_h.saturating_sub(44)),
+            info: rect(276, 0, 44, 44),
+            dock: rect(200, dock_y, 120, 44),
+            progress: rect(0, seek_y, 320, seek_h),
             status_text,
+            strip,
+            theme,
         }
+    }
+
+    /// One of the three dock cells, 0 = controls, 1 = volume, 2 = metadata.
+    pub fn dock_cell(&self, i: u8) -> Rectangle {
+        let n = 3u32;
+        let w = self.dock.size.width / n;
+        rect(
+            self.dock.top_left.x + w as i32 * i32::from(i),
+            self.dock.top_left.y,
+            w,
+            self.dock.size.height,
+        )
     }
 
     /// Map a raw controller touch into this layout's frame.
@@ -153,7 +345,7 @@ impl Layout {
     /// The controller always reports in its native 240x320 portrait frame
     /// regardless of what the display driver was told, so rotating the panel
     /// does not rotate the input. This is where the two are reconciled.
-    fn map(&self, t: Touch) -> Point {
+    pub fn map(&self, t: Touch) -> Point {
         let (x, y) = (i32::from(t.x), i32::from(t.y));
         let (nw, nh) = (i32::from(NATIVE_W), i32::from(NATIVE_H));
 
@@ -166,90 +358,54 @@ impl Layout {
     }
 }
 
-/// A user action derived from a touch.
+/// Press / move / release after rotation mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    /// Previous track.
-    Prev,
-    /// Toggle play and pause.
-    PlayPause,
-    /// Next track.
-    Next,
-    /// Set volume to a percentage.
-    Volume(u8),
-    /// Tap on the art area: show host addresses.
-    Art,
+pub enum TouchEv {
+    Down(Point),
+    Move(Point),
+    Up(Point),
 }
 
-/// Map a touch to an action, or `None` if it landed on nothing.
-///
-/// The transport strip is split into equal thirds with no dead band between
-/// them: the targets are already far larger than a fingertip, and a gap only
-/// creates places where a deliberate press does nothing.
-pub fn hit(layout: &Layout, t: Touch) -> Option<Action> {
-    let p = layout.map(t);
+/// Face hotspot. Surfaces have their own hit map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hotspot {
+    Art,
+    Info,
+    Title,
+    DockControls,
+    DockVolume,
+    DockMeta,
+    Seek,
+}
 
-    // Generous vertical slop on the slider. It is only a few pixels tall, and
-    // demanding that precision from a finger would make it unusable.
-    let slider = layout.volume;
-    let slider_zone = Rectangle::new(
-        slider.top_left - Point::new(0, 10),
-        Size::new(slider.size.width, slider.size.height + 20),
-    );
-    if slider_zone.contains(p) {
-        let dx = (p.x - slider.top_left.x).max(0) as u32;
-        let pct = (dx * 100 / slider.size.width.max(1)).min(100);
-        return Some(Action::Volume(pct as u8));
+/// Map a point on the resting face to a hotspot.
+pub fn face_hit(layout: &Layout, p: Point) -> Option<Hotspot> {
+    if layout.info.contains(p) {
+        return Some(Hotspot::Info);
     }
-
-    if layout.transport.contains(p) {
-        let third = layout.transport.size.width as i32 / 3;
-        let dx = p.x - layout.transport.top_left.x;
-        return Some(match dx {
-            d if d < third => Action::Prev,
-            d if d < 2 * third => Action::PlayPause,
-            _ => Action::Next,
+    if layout.art.contains(p) {
+        return Some(Hotspot::Art);
+    }
+    if layout.text.contains(p) {
+        return Some(Hotspot::Title);
+    }
+    if layout.dock.contains(p) {
+        let dx = p.x - layout.dock.top_left.x;
+        let third = layout.dock.size.width as i32 / 3;
+        return Some(if dx < third {
+            Hotspot::DockControls
+        } else if dx < 2 * third {
+            Hotspot::DockVolume
+        } else {
+            Hotspot::DockMeta
         });
     }
-
-    if layout.art.contains(p) {
-        return Some(Action::Art);
+    if layout.progress.size.height > 0 && layout.progress.contains(p) {
+        return Some(Hotspot::Seek);
     }
-
     None
 }
 
-/// Track text, word-wrapped into the column and centred.
-///
-/// Wrapping rather than a horizontal marquee. Three lines of fourteen
-/// characters covers most titles, and static text you can read at a glance is
-/// better than text that moves. Scrolling remains only as the fallback for
-/// content that still does not fit, and it scrolls the block vertically,
-/// which is the direction the overflow is in.
-#[derive(Debug, Default)]
-pub struct TextPane {
-    title: Vec<String>,
-    artist: Vec<String>,
-    album: Vec<String>,
-    /// Source strings, kept to detect a genuine change. Re-wrapping on every
-    /// poll would restart the scroll twice a second.
-    src: (String, String, String),
-    /// Total height of the composed block in pixels.
-    height: i32,
-    /// Pixels scrolled from the top.
-    offset: i32,
-    /// Pixels of overflow, zero when the block fits.
-    over: i32,
-    /// Direction of travel.
-    forward: bool,
-    /// Ticks left to hold at an end before reversing.
-    hold: u8,
-}
-
-/// Ticks held at each end before reversing.
-const HOLD_TICKS: u8 = 20;
-/// Pixels moved per tick.
-const STEP: i32 = 1;
 /// Vertical gap between lines of the same field.
 const LINE_GAP: i32 = 2;
 /// Vertical gap between fields.
@@ -286,7 +442,7 @@ fn push_wrapped(
 /// A word longer than the line is hard-split rather than left to overflow:
 /// long unbroken strings are common in filenames and stream titles, and
 /// silently clipping them loses the part most likely to identify the track.
-fn wrap(text: &str, width_px: u32, font: &MonoFont) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width_px: u32, font: &MonoFont) -> Vec<String> {
     let cols = (width_px / font.character_size.width).max(1) as usize;
     let mut out = Vec::new();
     let mut line = String::new();
@@ -333,9 +489,31 @@ fn block_height(lines: &[String], font: &MonoFont) -> i32 {
     lines.len() as i32 * line_h + (lines.len() as i32 - 1) * LINE_GAP
 }
 
+/// Track text, word-wrapped into the column.
+///
+/// Wrapping rather than a horizontal marquee. Scrolling is the fallback
+/// when the wrapped block is taller than the slot: the block moves
+/// vertically, which is the direction of the overflow.
+#[derive(Debug, Default)]
+pub struct TextPane {
+    title: Vec<String>,
+    artist: Vec<String>,
+    album: Vec<String>,
+    src: (String, String, String),
+    height: i32,
+    offset: i32,
+    over: i32,
+    forward: bool,
+    hold: u8,
+}
+
+/// Ticks held at each end before reversing.
+const HOLD_TICKS: u8 = 20;
+/// Pixels moved per tick.
+const STEP: i32 = 1;
+
 impl TextPane {
-    /// Re-wrap for new content. Does nothing if the strings are unchanged, so
-    /// a scroll in progress is not restarted by an ordinary poll.
+    /// Re-wrap for new content. Unchanged strings keep the scroll.
     pub fn set(&mut self, title: &str, artist: &str, album: &str, region: Rectangle) {
         let next = (title.to_string(), artist.to_string(), album.to_string());
         if self.src == next {
@@ -370,8 +548,7 @@ impl TextPane {
         self.hold = HOLD_TICKS;
     }
 
-    /// Advance one tick. Returns true if the position changed and the pane
-    /// needs repainting.
+    /// Advance one tick. True when the pane needs a repaint.
     pub fn step(&mut self) -> bool {
         if self.over == 0 {
             return false;
@@ -413,9 +590,9 @@ struct RowBuf {
 }
 
 impl RowBuf {
-    fn new(size: Size) -> Self {
+    fn new(size: Size, bg: Rgb565) -> Self {
         Self {
-            px: vec![Rgb565::BLACK; (size.width * size.height) as usize],
+            px: vec![bg; (size.width * size.height) as usize],
             size,
         }
     }
@@ -443,61 +620,6 @@ impl DrawTarget for RowBuf {
         }
         Ok(())
     }
-}
-
-/// Draw the text pane: title, artist and album, wrapped, centred both ways.
-///
-/// Vertically centred when the block fits, top-aligned and scrolled when it
-/// does not, because centring something that is moving reads as a fault
-/// rather than as a deliberate scroll.
-///
-/// Composed in memory and blitted in one write. See [`RowBuf`] for why.
-fn draw_text<D>(target: &mut D, region: Rectangle, pane: &TextPane) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let mut buf = RowBuf::new(region.size);
-
-    let centred = TextStyleBuilder::new()
-        .baseline(Baseline::Top)
-        .alignment(Alignment::Center)
-        .build();
-    let cx = region.size.width as i32 / 2;
-
-    // Centre the block when it fits; otherwise start at the top and let the
-    // scroll offset move it.
-    let mut y = if pane.over == 0 {
-        (region.size.height as i32 - pane.height) / 2
-    } else {
-        -pane.offset
-    };
-
-    let fields: [(&Vec<String>, &MonoFont, Rgb565); 3] = [
-        (&pane.title, TITLE_FONT, Rgb565::WHITE),
-        (&pane.artist, META_FONT, Rgb565::CSS_LIGHT_GRAY),
-        (&pane.album, META_FONT, Rgb565::CSS_DIM_GRAY),
-    ];
-
-    let mut first = true;
-    for (lines, font, colour) in fields {
-        if lines.is_empty() {
-            continue;
-        }
-        if !first {
-            y += FIELD_GAP;
-        }
-        first = false;
-
-        let style = MonoTextStyle::new(font, colour);
-        for line in lines {
-            // Infallible: RowBuf discards out-of-bounds pixels.
-            let _ = Text::with_text_style(line, Point::new(cx, y), style, centred).draw(&mut buf);
-            y += font.character_size.height as i32 + LINE_GAP;
-        }
-        y -= LINE_GAP;
-    }
-
-    target.fill_contiguous(&region, buf.px.iter().copied())
 }
 
 /// Draw the status screen shown before the player answers.
@@ -528,8 +650,9 @@ pub fn draw_status<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    let pal = layout.pal();
     let region = layout.frame;
-    let mut buf = RowBuf::new(region.size);
+    let mut buf = RowBuf::new(region.size, pal.bg);
 
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Top)
@@ -539,10 +662,10 @@ where
 
     let (title_font, fact_font) = status_fonts(layout.status_text);
     let width = region.size.width;
-    let title = MonoTextStyle::new(title_font, Rgb565::WHITE);
-    let section = MonoTextStyle::new(title_font, Rgb565::CSS_LIGHT_GRAY);
-    let fact = MonoTextStyle::new(fact_font, Rgb565::CSS_LIGHT_GRAY);
-    let status = MonoTextStyle::new(title_font, Rgb565::CSS_DIM_GRAY);
+    let title = MonoTextStyle::new(title_font, pal.title);
+    let section = MonoTextStyle::new(title_font, pal.meta);
+    let fact = MonoTextStyle::new(fact_font, pal.meta);
+    let status = MonoTextStyle::new(title_font, pal.dim);
 
     // Hostname first so a long name wraps like an address, then the body.
     // Build the lines first so the block height is known and it can be
@@ -637,32 +760,55 @@ where
     target.fill_contiguous(&region, buf.px.iter().copied())
 }
 
-/// Draw the whole screen.
+/// Draw the whole resting face.
 ///
-/// Clears and repaints, so this is only for a scene change: a different track,
-/// or a transport state change. A full frame is about 39 ms at 32 MHz, and
-/// doing that twice a second because `seek` advanced is visible as a flicker.
-/// Progress, volume and the scrolling rows are repainted individually.
+/// Clears and repaints, so this is only for a scene change. A full frame is
+/// about 39 ms at 32 MHz, and doing that twice a second because `seek`
+/// advanced is visible as a flicker. Progress and the text pane are
+/// repainted in place.
 pub fn draw<D>(
     target: &mut D,
     layout: &Layout,
     state: &PlayerState,
     art: Option<&Art>,
     pane: &TextPane,
+    scrub: Option<f32>,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    target.clear(Rgb565::BLACK)?;
+    draw_face(target, layout, state, art, pane, scrub)
+}
 
+/// Resting face: art, i ring, title block, dock, seek strip.
+pub fn draw_face<D>(
+    target: &mut D,
+    layout: &Layout,
+    state: &PlayerState,
+    art: Option<&Art>,
+    pane: &TextPane,
+    scrub: Option<f32>,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let pal = layout.pal();
+    target.clear(pal.bg)?;
     draw_art(target, layout, art)?;
-    draw_text(target, layout.text, pane)?;
-
-    draw_volume(target, layout, state)?;
-    draw_progress(target, layout, state)?;
-    draw_transport(target, layout, state)?;
-
+    draw_text(target, face_text_slot(layout), pane, pal)?;
+    draw_info_ring(target, layout, pal)?;
+    draw_dock(target, layout, state, pal)?;
+    draw_progress(target, layout, state, scrub)?;
     Ok(())
+}
+
+/// Repaint only the title block. The ticker uses this so a step does not
+/// clear art, dock or seek.
+pub fn draw_rows<D>(target: &mut D, layout: &Layout, pane: &TextPane) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_text(target, face_text_slot(layout), pane, layout.pal())
 }
 
 /// Draw the cover, centred in the art box.
@@ -674,6 +820,7 @@ pub fn draw_art<D>(target: &mut D, layout: &Layout, art: Option<&Art>) -> Result
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    let pal = layout.pal();
     let box_ = layout.art;
 
     if let Some(art) = art {
@@ -684,140 +831,517 @@ where
         let placed = Rectangle::new(Point::new(x, y), Size::new(w, h));
 
         if placed != box_ {
-            box_.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            box_.into_styled(PrimitiveStyle::with_fill(pal.bg))
                 .draw(target)?;
         }
 
         target.fill_contiguous(&placed, art.px.iter().copied())?;
     } else {
-        box_.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        box_.into_styled(PrimitiveStyle::with_fill(pal.bg))
             .draw(target)?;
     }
 
-    // Affordance: the whole art box opens the address overlay. A chip so
-    // that is findable on a cover that would otherwise hide it.
-    draw_info_mark(target, box_)
+    Ok(())
 }
 
-/// Small `i` in the art-box corner. The hit target is the whole box.
-fn draw_info_mark<D>(target: &mut D, box_: Rectangle) -> Result<(), D::Error>
+fn draw_info_ring<D>(target: &mut D, layout: &Layout, pal: Palette) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    const CHIP: u32 = 16;
-    let chip = Rectangle::new(
-        Point::new(
-            box_.top_left.x + 2,
-            box_.top_left.y + box_.size.height as i32 - CHIP as i32 - 2,
-        ),
-        Size::new(CHIP, CHIP),
-    );
-    chip.into_styled(PrimitiveStyle::with_fill(Rgb565::CSS_DIM_GRAY))
+    // Hit stays 48×48 / 44×44. Paint only the ring: a full-hit fill is a
+    // 48 px slab on the cover. Hairline + dim — not meta, not 2 px.
+    let c = info_ring_center(layout);
+    Circle::with_center(c, INFO_RING + 2)
+        .into_styled(PrimitiveStyle::with_fill(pal.bg))
         .draw(target)?;
-
-    let style = MonoTextStyle::new(META_FONT, Rgb565::WHITE);
+    Circle::with_center(c, INFO_RING)
+        .into_styled(PrimitiveStyle::with_stroke(pal.dim, 1))
+        .draw(target)?;
+    let style = MonoTextStyle::new(META_FONT, pal.dim);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
         .build();
-    Text::with_text_style(
-        "i",
-        chip.top_left + Point::new(CHIP as i32 / 2, CHIP as i32 / 2),
-        style,
-        centred,
-    )
-    .draw(target)?;
+    Text::with_text_style("IP", c, style, centred).draw(target)?;
     Ok(())
 }
 
-/// Repaint the text pane only.
-pub fn draw_rows<D>(target: &mut D, layout: &Layout, pane: &TextPane) -> Result<(), D::Error>
+/// A.1 / A.2 status ring. Hit stays 48×48 / 44×44.
+const INFO_RING: u32 = 18;
+/// ø18, 2 px in from the top-right of the frame. Hits stay the A.1 / A.2
+/// corner boxes — the ring used to sit on the cover in portrait.
+const INFO_RING_PORTRAIT: Point = Point::new(220, 2);
+const INFO_RING_LANDSCAPE: Point = Point::new(300, 2);
+
+/// Inset from the art column. A.2 pad 10. Portrait A.1 already starts
+/// at x 12, y 162 — do not add this again.
+const FACE_TEXT_PAD: i32 = 10;
+
+fn is_portrait(layout: &Layout) -> bool {
+    layout.frame.size.height > layout.frame.size.width
+}
+
+fn info_ring_center(layout: &Layout) -> Point {
+    Circle::new(info_ring_origin(layout), INFO_RING).center()
+}
+
+/// Top-left of the ø18 IP paint box. Surfaces put the hold countdown here.
+pub(crate) fn info_ring_origin(layout: &Layout) -> Point {
+    if is_portrait(layout) {
+        INFO_RING_PORTRAIT
+    } else {
+        INFO_RING_LANDSCAPE
+    }
+}
+
+pub(crate) fn info_ring_box(layout: &Layout) -> Rectangle {
+    Rectangle::new(info_ring_origin(layout), Size::new(INFO_RING, INFO_RING))
+}
+
+/// Top-left of the title block. Portrait is A.1. Landscape starts under
+/// the IP hit and insets from the art's right edge.
+fn face_text_origin(layout: &Layout) -> Point {
+    let region = layout.text;
+    if is_portrait(layout) {
+        return region.top_left;
+    }
+    let y = layout.info.top_left.y + layout.info.size.height as i32;
+    Point::new(region.top_left.x + FACE_TEXT_PAD, y)
+}
+
+fn face_text_width(layout: &Layout) -> u32 {
+    if is_portrait(layout) {
+        layout.text.size.width
+    } else {
+        layout
+            .text
+            .size
+            .width
+            .saturating_sub((FACE_TEXT_PAD * 2) as u32)
+    }
+}
+
+/// Clip box for the face title block.
+pub fn face_text_slot(layout: &Layout) -> Rectangle {
+    let origin = face_text_origin(layout);
+    let bottom = layout.text.top_left.y + layout.text.size.height as i32;
+    let height = (bottom - origin.y).max(0) as u32;
+    Rectangle::new(origin, Size::new(face_text_width(layout), height))
+}
+
+/// Title, artist, album. Left-aligned in the slot. Centred vertically
+/// when the block fits; top-aligned and scrolled when it does not.
+fn draw_text<D>(
+    target: &mut D,
+    region: Rectangle,
+    pane: &TextPane,
+    pal: Palette,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    draw_text(target, layout.text, pane)
+    let mut buf = RowBuf::new(region.size, pal.bg);
+    let left = TextStyleBuilder::new()
+        .baseline(Baseline::Top)
+        .alignment(Alignment::Left)
+        .build();
+    let mut y = if pane.over == 0 {
+        (region.size.height as i32 - pane.height) / 2
+    } else {
+        -pane.offset
+    };
+    let fields: [(&Vec<String>, &MonoFont, Rgb565); 3] = [
+        (&pane.title, TITLE_FONT, pal.title),
+        (&pane.artist, META_FONT, pal.meta),
+        (&pane.album, META_FONT, pal.dim),
+    ];
+    let mut first = true;
+    for (lines, font, colour) in fields {
+        if lines.is_empty() {
+            continue;
+        }
+        if !first {
+            y += FIELD_GAP;
+        }
+        first = false;
+        let style = MonoTextStyle::new(font, colour);
+        for line in lines {
+            let _ = Text::with_text_style(line, Point::new(0, y), style, left).draw(&mut buf);
+            y += font.character_size.height as i32 + LINE_GAP;
+        }
+        y -= LINE_GAP;
+    }
+    target.fill_contiguous(&region, buf.px.iter().copied())
 }
 
-/// Repaint the progress bar only.
+fn draw_dock<D>(
+    target: &mut D,
+    layout: &Layout,
+    state: &PlayerState,
+    pal: Palette,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    layout
+        .dock
+        .into_styled(PrimitiveStyle::with_fill(pal.bg))
+        .draw(target)?;
+    Line::new(
+        Point::new(layout.dock.top_left.x, layout.dock.top_left.y),
+        Point::new(
+            layout.dock.top_left.x + layout.dock.size.width as i32 - 1,
+            layout.dock.top_left.y,
+        ),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(pal.dim, 1))
+    .draw(target)?;
+    let cells = [
+        layout.dock_cell(0),
+        layout.dock_cell(1),
+        layout.dock_cell(2),
+    ];
+    draw_dock_transport(target, cells[0], state.is_playing(), pal)?;
+    draw_speaker_mark(
+        target,
+        cells[1],
+        state.is_muted() || state.volume.unwrap_or(0) == 0,
+        pal,
+    )?;
+    draw_list_icon(target, cells[2], pal.meta)?;
+    Ok(())
+}
+
+/// Speaker and list optical box. Play uses the same cell.
+const DOCK_GLYPH: i32 = 22;
+
+fn dock_glyph_center(cell: Rectangle) -> Point {
+    cell.center()
+}
+
+/// Two bars as one box centered on `center`. Same `with_center` as the
+/// speaker, so the pair does not sit a pixel left of the cell.
+fn dock_pause_bars(center: Point) -> [Rectangle; 2] {
+    let w = 5;
+    let gap = 4;
+    let h = 16;
+    let pair = Rectangle::with_center(center, Size::new((2 * w + gap) as u32, h as u32));
+    let left = pair.top_left;
+    [
+        Rectangle::new(left, Size::new(w as u32, h as u32)),
+        Rectangle::new(
+            Point::new(left.x + w + gap, left.y),
+            Size::new(w as u32, h as u32),
+        ),
+    ]
+}
+
+fn dock_play_triangle(center: Point) -> Triangle {
+    Triangle::new(
+        Point::new(center.x - 5, center.y - 9),
+        Point::new(center.x - 5, center.y + 9),
+        Point::new(center.x + 10, center.y),
+    )
+}
+
+/// Play triangle or pause bars, same language as speaker and list.
+fn draw_dock_transport<D>(
+    target: &mut D,
+    cell: Rectangle,
+    playing: bool,
+    pal: Palette,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let c = dock_glyph_center(cell);
+    if playing {
+        for bar in dock_pause_bars(c) {
+            bar.into_styled(PrimitiveStyle::with_fill(pal.title))
+                .draw(target)?;
+        }
+    } else {
+        dock_play_triangle(c)
+            .into_styled(PrimitiveStyle::with_fill(pal.title))
+            .draw(target)?;
+    }
+    Ok(())
+}
+
+fn draw_list_icon<D>(target: &mut D, cell: Rectangle, colour: Rgb565) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let c = dock_glyph_center(cell);
+    let w = DOCK_GLYPH;
+    let gap = DOCK_GLYPH / 5;
+    let block = gap * 2 + 2;
+    let top = c.y - block / 2;
+    for i in 0..3 {
+        Rectangle::new(
+            Point::new(c.x - w / 2, top + i * gap),
+            Size::new(w as u32, 2),
+        )
+        .into_styled(PrimitiveStyle::with_fill(colour))
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+/// The signed-off 12×10 speaker, 2×. 3× filled a 40 px landscape cell.
+/// Do not replace with a free triangle — that reads as an arrow.
+fn draw_speaker_mark<D>(
+    target: &mut D,
+    cell: Rectangle,
+    silent: bool,
+    pal: Palette,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_speaker_at(target, dock_glyph_center(cell), silent, pal, 2)
+}
+
+/// Signed-off speaker, origin from `Rectangle::with_center` so it shares
+/// a center with the rest of a row.
+pub fn draw_speaker_at<D>(
+    target: &mut D,
+    center: Point,
+    silent: bool,
+    pal: Palette,
+    scale: i32,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let colour = speaker_colour(silent, if silent { 0 } else { 1 }, pal);
+    let box_ = speaker_box(center, scale);
+    let origin = box_.top_left;
+    let scale = scale.max(1);
+    plot_icon_px_scaled(target, origin, SPEAKER_BODY, colour, scale)?;
+    if silent {
+        plot_icon_px_scaled(target, origin, SPEAKER_MUTE_X, colour, scale)?;
+    } else {
+        plot_icon_px_scaled(target, origin, SPEAKER_WAVES, colour, scale)?;
+    }
+    Ok(())
+}
+
+/// Bounding box of the 12×10 speaker at `scale`, centered on `center`.
+pub fn speaker_box(center: Point, scale: i32) -> Rectangle {
+    let scale = scale.max(1);
+    Rectangle::with_center(
+        center,
+        Size::new((SPEAKER_W * scale) as u32, (SPEAKER_H * scale) as u32),
+    )
+}
+
+fn plot_icon_px_scaled<D>(
+    target: &mut D,
+    origin: Point,
+    pixels: &[(u8, u8)],
+    colour: Rgb565,
+    scale: i32,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let scale = scale.max(1);
+    for &(x, y) in pixels {
+        Rectangle::new(
+            Point::new(
+                origin.x + i32::from(x) * scale,
+                origin.y + i32::from(y) * scale,
+            ),
+            Size::new(scale as u32, scale as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(colour))
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+/// Repaint the seek / stream slot.
 ///
-/// The seek/duration unit mismatch is handled in `PlayerState::progress`.
+/// Progress uses seek/duration. Stream paints IN fields the source wrote.
+/// Off, or a source that published nothing for that mode, is black. The
+/// seek/duration unit mismatch is handled in `PlayerState::progress`.
 pub fn draw_progress<D>(
     target: &mut D,
     layout: &Layout,
     state: &PlayerState,
+    scrub: Option<f32>,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let bar = layout.progress;
-
-    // Nothing to show for a stream with no duration, which is the normal case
-    // for internet radio. Leave the row blank rather than drawing an empty
-    // trough that looks like a stalled track.
-    let Some(frac) = state.progress() else {
-        bar.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-            .draw(target)?;
-        return Ok(());
-    };
-
-    fill_bar(target, bar, frac, Rgb565::CSS_DIM_GRAY, Rgb565::WHITE)
+    let pal = layout.pal();
+    match layout.strip {
+        Strip::Off => Ok(()),
+        Strip::Stream => draw_stream_info(target, layout.progress, state, pal),
+        Strip::Progress => draw_seek_strip(
+            target,
+            layout.progress,
+            state,
+            pal,
+            scrub,
+            is_portrait(layout),
+        ),
+    }
 }
 
-/// Repaint the volume slider only.
-pub fn draw_volume<D>(target: &mut D, layout: &Layout, state: &PlayerState) -> Result<(), D::Error>
+fn blank_strip<D>(target: &mut D, bar: Rectangle, pal: Palette) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let frac = if state.is_muted() {
-        0.0
-    } else {
-        f32::from(state.volume.unwrap_or(0)) / 100.0
-    };
-
-    fill_bar(
-        target,
-        layout.volume,
-        frac,
-        Rgb565::CSS_DIM_GRAY,
-        Rgb565::CSS_ORANGE,
-    )
+    bar.into_styled(PrimitiveStyle::with_fill(pal.bg))
+        .draw(target)
 }
 
-/// Repaint the transport labels only.
-pub fn draw_transport<D>(
+/// One centred line of IN format. Too long is clipped, not wrapped: the
+/// slot is one face tall.
+fn draw_stream_info<D>(
     target: &mut D,
-    layout: &Layout,
+    bar: Rectangle,
     state: &PlayerState,
+    pal: Palette,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let strip = layout.transport;
-    strip
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-        .draw(target)?;
+    let Some(text) = state.stream_info() else {
+        return blank_strip(target, bar, pal);
+    };
 
-    let style = MonoTextStyle::new(TITLE_FONT, Rgb565::WHITE);
+    let cols = (bar.size.width / META_FONT.character_size.width).max(1) as usize;
+    let shown: String = text.chars().take(cols).collect();
+
+    let mut buf = RowBuf::new(bar.size, pal.bg);
+    let style = MonoTextStyle::new(META_FONT, pal.meta);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
         .build();
+    let _ = Text::with_text_style(
+        &shown,
+        Point::new(bar.size.width as i32 / 2, bar.size.height as i32 / 2),
+        style,
+        centred,
+    )
+    .draw(&mut buf);
+    target.fill_contiguous(&bar, buf.px.iter().copied())
+}
 
-    let third = strip.size.width as i32 / 3;
-    let y = strip.top_left.y + strip.size.height as i32 / 2;
-    let play = if state.is_playing() { "||" } else { ">" };
-
-    for (i, label) in ["|<", play, ">|"].iter().enumerate() {
-        Text::with_text_style(
-            label,
-            Point::new(strip.top_left.x + third * i as i32 + third / 2, y),
-            style,
-            centred,
-        )
-        .draw(target)?;
+/// `m:ss` under an hour, `h:mm:ss` at or above. Matches the Web player's
+/// left/right counters, not a single `elapsed / total` string.
+fn fmt_clock(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
     }
+}
 
-    Ok(())
+/// Knob is 12 px. Top-aligned chrome hangs it from the slot top so the
+/// trough is not a second gap under the dock icons.
+const SEEK_KNOB_H: i32 = 12;
+
+fn seek_chrome_cy(slot: Rectangle, align_top: bool) -> i32 {
+    if align_top {
+        SEEK_KNOB_H / 2
+    } else {
+        slot.size.height as i32 / 2
+    }
+}
+
+/// Seek strip: clocks, title-coloured fill, 4×12 knob. `scrub` overrides
+/// the live fraction while a finger is down. Portrait face passes
+/// `align_top` so the trough sits under the dock pad, not in the middle
+/// of the strip.
+pub(crate) fn draw_seek_strip<D>(
+    target: &mut D,
+    slot: Rectangle,
+    state: &PlayerState,
+    pal: Palette,
+    scrub: Option<f32>,
+    align_top: bool,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    if slot.size.height == 0 {
+        return Ok(());
+    }
+    let frac = scrub.or_else(|| state.progress());
+    let Some(frac) = frac else {
+        return blank_strip(target, slot, pal);
+    };
+    let total = state.duration.unwrap_or(0);
+    let elapsed = if let Some(s) = scrub {
+        (s.clamp(0.0, 1.0) * total as f32) as u64
+    } else {
+        state.seek.unwrap_or(0) / 1000
+    };
+    let left = fmt_clock(elapsed);
+    let right = fmt_clock(total);
+    let char_w = META_FONT.character_size.width;
+    let clock_w = left.chars().count().max(right.chars().count()).max(4) as u32 * char_w;
+    let pad = 8u32;
+    let gap = 10u32;
+    let track_x = pad + clock_w + gap;
+    let inner_w = slot.size.width.saturating_sub(track_x * 2);
+    let bar_h = 6u32.min(slot.size.height.saturating_sub(4));
+    let cy = seek_chrome_cy(slot, align_top);
+    let bar_y = (cy - bar_h as i32 / 2).max(0) as u32;
+
+    let mut buf = RowBuf::new(slot.size, pal.bg);
+    let style = MonoTextStyle::new(META_FONT, pal.meta);
+    let left_align = TextStyleBuilder::new()
+        .baseline(Baseline::Middle)
+        .alignment(Alignment::Left)
+        .build();
+    let right_align = TextStyleBuilder::new()
+        .baseline(Baseline::Middle)
+        .alignment(Alignment::Right)
+        .build();
+    let _ =
+        Text::with_text_style(&left, Point::new(pad as i32, cy), style, left_align).draw(&mut buf);
+    let _ = Text::with_text_style(
+        &right,
+        Point::new(slot.size.width as i32 - pad as i32, cy),
+        style,
+        right_align,
+    )
+    .draw(&mut buf);
+
+    if inner_w > 0 {
+        let track = Rectangle::new(
+            Point::new(track_x as i32, bar_y as i32),
+            Size::new(inner_w, bar_h),
+        );
+        let _ = fill_bar(&mut buf, track, frac, pal.dim, pal.title);
+        let kx = track.top_left.x + (track.size.width as f32 * frac.clamp(0.0, 1.0)) as i32;
+        let knob = Rectangle::new(
+            Point::new(kx - 2, cy - SEEK_KNOB_H / 2),
+            Size::new(4, SEEK_KNOB_H as u32),
+        );
+        let _ = knob
+            .into_styled(PrimitiveStyle::with_fill(pal.title))
+            .draw(&mut buf);
+    }
+    target.fill_contiguous(&slot, buf.px.iter().copied())
+}
+
+/// Title-colour cabinet/cone/waves with level; danger cabinet/cone/cross when silent.
+fn speaker_colour(muted: bool, volume: u8, pal: Palette) -> Rgb565 {
+    if muted || volume == 0 {
+        pal.danger
+    } else {
+        pal.title
+    }
 }
 
 /// Draw a horizontal fill bar: trough, then the filled portion.
@@ -853,69 +1377,123 @@ mod tests {
     }
 
     #[test]
-    fn default_portrait_matches_the_shipped_layout() {
+    fn portrait_matches_adr0020_a1() {
         let l = Layout::for_rotation(0);
-        assert_eq!(origin(l.art), (20, 8, 200, 200));
-        assert_eq!(origin(l.text), (4, 214, 232, 48));
-        assert_eq!(origin(l.volume), (10, 268, 220, 6));
-        assert_eq!(origin(l.progress), (10, 280, 220, 4));
-        assert_eq!(origin(l.transport), (0, 292, 240, 28));
-        assert_eq!(l.status_text, StatusText::Normal);
+        // Title-only + leftover square. Dock / seek / info hits stay A.1.
+        assert_eq!(origin(l.art), (27, 0, 186, 186));
+        assert_eq!(origin(l.text), (12, 196, 216, 40));
+        assert_eq!(origin(l.info), (192, 0, 48, 48));
+        assert_eq!(origin(l.dock), (0, 236, 240, 52));
+        assert_eq!(origin(l.progress), (0, 288, 240, 32));
+        assert_eq!(l.art.size.width, l.art.size.height);
+        assert!(l.art.top_left.x + l.art.size.width as i32 <= INFO_RING_PORTRAIT.x);
+        assert_eq!(l.theme, Theme::Ink);
     }
 
     #[test]
-    fn default_landscape_matches_the_shipped_layout() {
+    fn portrait_icon_to_seek_matches_divider_to_icon() {
+        let l = Layout::for_rotation(0);
+        let ring = Circle::with_center(dock_glyph_center(l.dock_cell(2)), DOCK_GLYPH as u32);
+        let from_divider = ring.top_left.y - l.dock.top_left.y;
+        let to_seek = l.progress.top_left.y - (ring.top_left.y + DOCK_GLYPH);
+        assert_eq!(from_divider, to_seek);
+        assert_eq!(seek_chrome_cy(l.progress, true), SEEK_KNOB_H / 2);
+        assert!(seek_chrome_cy(l.progress, true) < seek_chrome_cy(l.progress, false));
+    }
+
+    #[test]
+    fn landscape_matches_adr0020_a2() {
         let l = Layout::for_rotation(270);
-        assert_eq!(origin(l.art), (10, 4, 168, 168));
-        assert_eq!(origin(l.text), (184, 4, 132, 168));
-        assert_eq!(origin(l.volume), (10, 178, 300, 6));
-        assert_eq!(origin(l.progress), (10, 190, 300, 4));
-        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+        assert_eq!(origin(l.art), (0, 0, 200, 200));
+        assert_eq!(origin(l.info), (276, 0, 44, 44));
+        assert_eq!(origin(l.dock), (200, 156, 120, 44));
+        assert_eq!(origin(l.progress), (0, 200, 320, 40));
+        assert_eq!(origin(l.dock_cell(0)), (200, 156, 40, 44));
+        let a = l.dock_cell(0).center();
+        let b = l.dock_cell(1).center();
+        let c = l.dock_cell(2).center();
+        assert_eq!(b.x - a.x, c.x - b.x);
+        assert_eq!(a.y, b.y);
+        assert_eq!(b.y, c.y);
+        assert!(
+            l.dock_cell(0).size.width as i32 >= DOCK_GLYPH + 8,
+            "landscape cells must leave a gap around the glyph"
+        );
     }
 
     #[test]
-    fn tight_keeps_art_and_closes_the_bar_gap() {
-        let p = Layout::compose(0, BarGap::Tight, StatusText::Normal);
-        assert_eq!(origin(p.art), (20, 8, 200, 200));
-        assert_eq!(origin(p.volume), (10, 270, 220, 6));
-        assert_eq!(origin(p.progress), (10, 280, 220, 4));
-        assert_eq!(origin(p.transport), (0, 292, 240, 28));
-        let l = Layout::compose(90, BarGap::Tight, StatusText::Normal);
-        assert_eq!(origin(l.art), (10, 4, 168, 168));
-        assert_eq!(origin(l.volume), (10, 178, 300, 6));
-        assert_eq!(origin(l.progress), (10, 188, 300, 4));
-        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+    fn pause_bars_share_the_cell_center() {
+        let c = Point::new(20, 22);
+        let [a, b] = dock_pause_bars(c);
+        let right = b.top_left.x + b.size.width as i32;
+        let pair = Rectangle::new(
+            a.top_left,
+            Size::new((right - a.top_left.x) as u32, a.size.height),
+        );
+        assert_eq!(pair.center(), c);
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.top_left.y, b.top_left.y);
     }
 
     #[test]
-    fn transport_does_not_move_when_the_gap_opens() {
-        for gap in [BarGap::Tight, BarGap::Default, BarGap::Roomy] {
-            let p = Layout::compose(0, gap, StatusText::Normal);
-            assert_eq!(origin(p.transport), (0, 292, 240, 28));
-            let l = Layout::compose(90, gap, StatusText::Normal);
-            assert_eq!(origin(l.transport), (0, 200, 320, 40));
+    fn landscape_title_starts_below_the_info_ring() {
+        let l = Layout::for_rotation(270);
+        let o = face_text_origin(&l);
+        assert_eq!(o.x, 210);
+        assert_eq!(o.y, 44);
+        let p = Layout::for_rotation(0);
+        assert_eq!(face_text_origin(&p), Point::new(12, 196));
+        assert_eq!(origin(face_text_slot(&p)), (12, 196, 216, 40));
+        assert_eq!(INFO_RING, 18);
+        assert_eq!(INFO_RING_PORTRAIT, Point::new(220, 2));
+        assert_eq!(INFO_RING_LANDSCAPE, Point::new(300, 2));
+        assert_eq!(
+            INFO_RING_PORTRAIT.x + INFO_RING as i32,
+            238,
+            "2 px in from the portrait right edge"
+        );
+        assert_eq!(
+            INFO_RING_LANDSCAPE.x + INFO_RING as i32,
+            318,
+            "2 px in from the landscape right edge"
+        );
+        assert_eq!(
+            info_ring_center(&p),
+            Circle::new(INFO_RING_PORTRAIT, INFO_RING).center()
+        );
+        assert_eq!(
+            info_ring_center(&l),
+            Circle::new(INFO_RING_LANDSCAPE, INFO_RING).center()
+        );
+    }
+
+    #[test]
+    fn long_title_scrolls_the_block_vertically() {
+        let l = Layout::for_rotation(0);
+        let slot = face_text_slot(&l);
+        let mut pane = TextPane::default();
+        pane.set(
+            "A long title that must wrap more than twice so the block is taller than the slot",
+            "",
+            "",
+            slot,
+        );
+        assert!(pane.over > 0);
+        let mut moved = false;
+        for _ in 0..(HOLD_TICKS as usize + 3) {
+            if pane.step() {
+                moved = true;
+            }
         }
-    }
-
-    #[test]
-    fn roomy_portrait_opens_the_bar_gap_from_art() {
-        let l = Layout::compose(0, BarGap::Roomy, StatusText::Normal);
-        assert_eq!(origin(l.volume), (10, 260, 220, 6));
-        assert_eq!(origin(l.progress), (10, 280, 220, 4));
-        assert_eq!(l.art.size.height, 196);
-        let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
-        assert_eq!(between, 14);
-    }
-
-    #[test]
-    fn roomy_landscape_steals_from_art_not_transport() {
-        let l = Layout::compose(90, BarGap::Roomy, StatusText::Normal);
-        assert_eq!(origin(l.art), (10, 4, 156, 156));
-        assert_eq!(origin(l.volume), (10, 168, 300, 6));
-        assert_eq!(origin(l.progress), (10, 188, 300, 4));
-        assert_eq!(origin(l.transport), (0, 200, 320, 40));
-        let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
-        assert_eq!(between, 14);
+        assert!(moved);
+        assert!(pane.offset > 0);
+        pane.set(
+            "A long title that must wrap more than twice so the block is taller than the slot",
+            "",
+            "",
+            slot,
+        );
+        assert!(pane.offset > 0, "same strings must not restart the scroll");
     }
 
     #[test]
@@ -935,10 +1513,117 @@ mod tests {
             bar_gap_landscape: BarGap::Roomy,
             status_text_portrait: StatusText::Normal,
             bar_gap_portrait: BarGap::Tight,
+            strip_landscape: Strip::Stream,
+            strip_portrait: Strip::Off,
+            theme: Theme::Studio,
             ..Config::default()
         };
         let l = Layout::from_config(&cfg);
         assert_eq!(l.status_text, StatusText::Large);
-        assert_eq!(l.art.size.width, 156);
+        assert_eq!(l.art.size.width, 200);
+        assert_eq!(l.strip, Strip::Stream);
+        assert_eq!(l.theme, Theme::Studio);
+        assert_eq!(origin(l.progress), (0, 200, 320, 40));
+    }
+
+    #[test]
+    fn off_hides_seek_and_grows_art() {
+        let p = Layout::compose(
+            0,
+            BarGap::Default,
+            StatusText::Normal,
+            Strip::Off,
+            Theme::Ink,
+        );
+        assert_eq!(p.progress.size.height, 0);
+        assert_eq!(origin(p.dock), (0, 268, 240, 52));
+        assert_eq!(p.art.size.width, p.art.size.height);
+        assert!(p.art.size.height >= 186);
+        assert!(p.art.size.height <= PORTRAIT_ART_MAX);
+    }
+
+    #[test]
+    fn seek_fraction_pads_twelve_pixels() {
+        let slot = rect(0, 0, 240, 32);
+        assert_eq!(seek_fraction(slot, Point::new(12, 16)), 0.0);
+        assert_eq!(seek_fraction(slot, Point::new(228, 16)), 1.0);
+        let mid = seek_fraction(slot, Point::new(120, 16));
+        assert!((mid - 0.5).abs() < 0.02, "{mid}");
+    }
+
+    #[test]
+    fn face_hit_prefers_the_info_ring() {
+        let l = Layout::for_rotation(0);
+        assert_eq!(face_hit(&l, Point::new(200, 10)), Some(Hotspot::Info));
+        assert_eq!(face_hit(&l, Point::new(100, 40)), Some(Hotspot::Art));
+        assert_eq!(
+            face_hit(&l, Point::new(40, 250)),
+            Some(Hotspot::DockControls)
+        );
+        assert_eq!(face_hit(&l, Point::new(120, 300)), Some(Hotspot::Seek));
+    }
+
+    #[test]
+    fn clock_matches_the_web_player() {
+        assert_eq!(fmt_clock(0), "0:00");
+        assert_eq!(fmt_clock(323), "5:23");
+        assert_eq!(fmt_clock(269), "4:29");
+        assert_eq!(fmt_clock(3600), "1:00:00");
+        assert_eq!(fmt_clock(3661), "1:01:01");
+    }
+
+    #[test]
+    fn speaker_is_red_when_silent() {
+        let ink = palette(Theme::Ink);
+        assert_eq!(speaker_colour(false, 48, ink), Rgb565::WHITE);
+        assert_eq!(speaker_colour(true, 48, ink), Rgb565::CSS_RED);
+        assert_eq!(speaker_colour(false, 0, ink), Rgb565::CSS_RED);
+        assert_eq!(speaker_colour(true, 0, ink), Rgb565::CSS_RED);
+    }
+
+    #[test]
+    fn ink_matches_the_shipped_css() {
+        let ink = palette(Theme::Ink);
+        assert_eq!(ink.bg, Rgb565::BLACK);
+        assert_eq!(ink.title, Rgb565::WHITE);
+        assert_eq!(ink.meta, Rgb565::CSS_LIGHT_GRAY);
+        assert_eq!(ink.dim, Rgb565::CSS_DIM_GRAY);
+        assert_eq!(ink.accent, Rgb565::CSS_ORANGE);
+        assert_eq!(ink.danger, Rgb565::CSS_RED);
+    }
+
+    #[test]
+    fn adr0020_roster_paints_the_table_words() {
+        let ink = palette(Theme::Ink);
+        let dusk = palette(Theme::Dusk);
+        let studio = palette(Theme::Studio);
+        let night = palette(Theme::Night);
+        assert_eq!(ink.bg, word(0x0000));
+        assert_eq!(ink.title, word(0xFFFF));
+        assert_eq!(ink.meta, word(0xD69A));
+        assert_eq!(ink.dim, word(0x6B4D));
+        assert_eq!(ink.accent, word(0xFD20));
+        assert_eq!(ink.danger, word(0xF800));
+        assert_eq!(dusk.bg, word(0x30C1));
+        assert_eq!(dusk.title, word(0xFEB5));
+        assert_eq!(dusk.meta, word(0xD52E));
+        assert_eq!(dusk.dim, word(0x9B07));
+        assert_eq!(dusk.accent, word(0xFD85));
+        assert_eq!(dusk.danger, word(0xFA87));
+        assert_eq!(studio.bg, word(0x08C7));
+        assert_eq!(studio.title, word(0xDF5F));
+        assert_eq!(studio.meta, word(0x959A));
+        assert_eq!(studio.dim, word(0x5352));
+        assert_eq!(studio.accent, word(0x3DBF));
+        assert_eq!(studio.danger, word(0xFA4A));
+        assert_eq!(night.bg, word(0x1040));
+        assert_eq!(night.title, word(0xFD89));
+        assert_eq!(night.meta, word(0xCC67));
+        assert_eq!(night.dim, word(0x7264));
+        assert_eq!(night.accent, word(0xFF57));
+        assert_eq!(night.danger, word(0xF944));
+        assert_ne!(dusk.bg, ink.bg);
+        assert_ne!(night.bg, ink.bg);
+        assert_ne!(dusk.accent, studio.accent);
     }
 }

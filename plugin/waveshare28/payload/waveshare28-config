@@ -104,6 +104,9 @@ status_text_portrait=normal
 status_text_landscape=normal
 bar_gap_portrait=default
 bar_gap_landscape=default
+strip_portrait=progress
+strip_landscape=progress
+theme=ink
 # Set when the durable file itself contained the key. Used to warn when
 # the key cannot apply, not because of the default.
 console_set=0
@@ -149,6 +152,31 @@ validate_bar_gap() {
     case "$1" in
         tight|default|roomy) ;;
         *) die "bar_gap must be tight, default or roomy, got '$1'" ;;
+    esac
+}
+
+validate_strip() {
+    case "$1" in
+        progress|stream|off) ;;
+        *) die "strip must be progress, stream or off, got '$1'" ;;
+    esac
+}
+
+validate_theme() {
+    case "$1" in
+        ink|dusk|studio|night) ;;
+        *) die "theme must be ink, dusk, studio or night, got '$1'" ;;
+    esac
+}
+
+# Keys that only rewrite the toml and restart the unit. They must not
+# touch userconfig.txt or cmdline.txt: those are firmware overlays.
+is_live_key() {
+    case "$1" in
+        status_text_portrait|status_text_landscape|bar_gap_portrait|bar_gap_landscape|strip_portrait|strip_landscape|theme)
+            return 0
+            ;;
+        *) return 1 ;;
     esac
 }
 
@@ -365,6 +393,31 @@ panel_fb_dev() {
     printf '/dev/fb%s' "$idx"
 }
 
+# fbtft sizes the node at boot. Clockwise 0/180 is 240×320; 90/270 is 320×240.
+fb_layout_virtual_size() {
+    case "$rotation" in
+        90|270) printf '320,240' ;;
+        *) printf '240,320' ;;
+    esac
+}
+
+panel_fb_virtual_size() {
+    local dev name
+    dev="$(panel_fb_dev)" || return 1
+    name="${dev##*/}"
+    [[ -r /sys/class/graphics/${name}/virtual_size ]] || return 1
+    tr -d '[:space:]' < "/sys/class/graphics/${name}/virtual_size"
+}
+
+# 0 when the live panel fb already matches this rotation's layout.
+fb_size_matches_layout() {
+    local live want
+    [[ "$backend" == framebuffer ]] || return 0
+    live="$(panel_fb_virtual_size)" || return 1
+    want="$(fb_layout_virtual_size)"
+    [[ "$live" == "$want" ]]
+}
+
 fbcon_map_token() {
     local idx
     idx="$(live_panel_fb_index)" || return 1
@@ -404,6 +457,9 @@ load_conf() {
             status_text_landscape) status_text_landscape="$value" ;;
             bar_gap_portrait)      bar_gap_portrait="$value" ;;
             bar_gap_landscape)     bar_gap_landscape="$value" ;;
+            strip_portrait)        strip_portrait="$value" ;;
+            strip_landscape)       strip_landscape="$value" ;;
+            theme)                 theme="$value" ;;
             splash)   warn "'splash' is obsolete; use backend=framebuffer" ;;
             *)        warn "ignoring unknown key in ${CONF}: ${key}" ;;
         esac
@@ -449,6 +505,15 @@ status_text_landscape=${status_text_landscape}
 # never from the transport strip.
 bar_gap_portrait=${bar_gap_portrait}
 bar_gap_landscape=${bar_gap_landscape}
+
+# Volume-to-transport slot. progress is the shipped bar. stream is IN
+# format from getState. off leaves the slot blank.
+strip_portrait=${strip_portrait}
+strip_landscape=${strip_landscape}
+
+# Colour tokens. ink is the shipped black / white / orange panel.
+# dusk, studio and night are ADR-0020 names. Live after set; no reboot.
+theme=${theme}
 EOF
     log "wrote ${CONF}"
 }
@@ -745,6 +810,9 @@ status_text_portrait = "${status_text_portrait}"
 status_text_landscape = "${status_text_landscape}"
 bar_gap_portrait = "${bar_gap_portrait}"
 bar_gap_landscape = "${bar_gap_landscape}"
+strip_portrait = "${strip_portrait}"
+strip_landscape = "${strip_landscape}"
+theme = "${theme}"
 EOF
     log "wrote ${TOML}"
 }
@@ -833,7 +901,7 @@ enable_safely() {
         die "systemd-analyze verify reported problems; unit not enabled"
     fi
 
-    local dev
+    local dev live want
     if ! dev="$(backend_device)" || [[ ! -e "$dev" ]]; then
         if [[ "$backend" == framebuffer ]]; then
             log "${PANEL_FB_NAME} is not present; backend=framebuffer applies on the next boot"
@@ -845,6 +913,19 @@ enable_safely() {
             systemctl stop "$UNIT" >/dev/null 2>&1 || true
             systemctl enable "$UNIT" >/dev/null
         fi
+        return 0
+    fi
+
+    # Overlay is live but still the previous boot's size. Starting would
+    # exit 1 and Restart=on-failure would loop until StartLimitBurst.
+    if [[ "$backend" == framebuffer ]] && ! fb_size_matches_layout; then
+        live="$(panel_fb_virtual_size || true)"
+        want="$(fb_layout_virtual_size)"
+        log "live ${PANEL_FB_NAME} is ${live:-unknown}, layout for rotation=${rotation} is ${want}"
+        log "fbtft sizes the node at boot; not starting this boot"
+        systemctl stop "$UNIT" >/dev/null 2>&1 || true
+        systemctl enable "$UNIT" >/dev/null
+        log "unit enabled. Reboot for rotate=$(fbtft_rotate "$rotation") to take effect."
         return 0
     fi
 
@@ -876,6 +957,9 @@ cmd_apply() {
     validate_status_text "$status_text_landscape"
     validate_bar_gap "$bar_gap_portrait"
     validate_bar_gap "$bar_gap_landscape"
+    validate_strip "$strip_portrait"
+    validate_strip "$strip_landscape"
+    validate_theme "$theme"
     if ! [[ "$speed" =~ ^[0-9]+$ ]] || [[ "$speed" -le 0 ]]; then
         die "speed must be a positive number, got '${speed}'"
     fi
@@ -944,17 +1028,41 @@ cmd_apply() {
     fi
     if [[ "$backend" == framebuffer ]] && ! panel_fb_dev >/dev/null; then
         log "reboot required: ${PANEL_FB_NAME} is not on this boot."
+    elif [[ "$backend" == framebuffer ]] && ! fb_size_matches_layout; then
+        log "reboot required: live fb is $(panel_fb_virtual_size), layout is $(fb_layout_virtual_size)."
     fi
+}
+
+apply_live() {
+    write_toml
+    if [[ ! -f ${UNIT_DIR}/${UNIT} ]]; then
+        log "unit not installed; running a full apply"
+        cmd_apply
+        return
+    fi
+    # StartLimitBurst counts every start, including a healthy restart.
+    # A/B of live keys is five named sets in two minutes; without this
+    # the sixth set dies as "start attempted too often" while the unit
+    # never failed. Crash-loop braking stays on Restart=on-failure.
+    systemctl reset-failed "$UNIT" 2>/dev/null || true
+    systemctl restart "$UNIT" || die "unit failed to restart; journalctl -u ${UNIT}"
+    sleep 1
+    systemctl is-active --quiet "$UNIT" || {
+        systemctl status "$UNIT" --no-pager || true
+        die "unit did not stay running after live apply"
+    }
+    log "applied live keys. boot overlays unchanged."
 }
 
 cmd_set() {
     require_root
     load_conf
 
-    local arg key value
+    local arg key value live_only=1
     for arg in "$@"; do
         key="${arg%%=*}"
         value="${arg#*=}"
+        is_live_key "$key" || live_only=0
         case "$key" in
             rotation) rotation="$value" ;;
             speed)    speed="$value" ;;
@@ -965,6 +1073,9 @@ cmd_set() {
             status_text_landscape) status_text_landscape="$value" ;;
             bar_gap_portrait)      bar_gap_portrait="$value" ;;
             bar_gap_landscape)     bar_gap_landscape="$value" ;;
+            strip_portrait)        strip_portrait="$value" ;;
+            strip_landscape)       strip_landscape="$value" ;;
+            theme)                 theme="$value" ;;
             *)        die "unknown setting: ${key}" ;;
         esac
     done
@@ -977,8 +1088,15 @@ cmd_set() {
     validate_status_text "$status_text_landscape"
     validate_bar_gap "$bar_gap_portrait"
     validate_bar_gap "$bar_gap_landscape"
+    validate_strip "$strip_portrait"
+    validate_strip "$strip_landscape"
+    validate_theme "$theme"
     save_conf
-    cmd_apply
+    if [[ "$live_only" -eq 1 ]]; then
+        apply_live
+    else
+        cmd_apply
+    fi
 }
 
 cmd_detect() {
@@ -999,6 +1117,9 @@ cmd_show_json() {
     printf '"status_text_landscape":%s,' "$(json_str "$status_text_landscape")"
     printf '"bar_gap_portrait":%s,' "$(json_str "$bar_gap_portrait")"
     printf '"bar_gap_landscape":%s,' "$(json_str "$bar_gap_landscape")"
+    printf '"strip_portrait":%s,' "$(json_str "$strip_portrait")"
+    printf '"strip_landscape":%s,' "$(json_str "$strip_landscape")"
+    printf '"theme":%s,' "$(json_str "$theme")"
     printf '"console_set":%s,' "$(json_bool "$console_set")"
     printf '"hdmi_set":%s,' "$(json_bool "$hdmi_set")"
     printf '"source":%s,' "$(json_str "$source")"
@@ -1008,7 +1129,11 @@ cmd_show_json() {
     if [[ "$backend" == framebuffer ]]; then
         if dev="$(panel_fb_dev)"; then
             printf '"device":%s,' "$(json_str "$dev")"
-            printf '"reboot_required":false,'
+            if fb_size_matches_layout; then
+                printf '"reboot_required":false,'
+            else
+                printf '"reboot_required":true,'
+            fi
         else
             printf '"device":null,'
             printf '"reboot_required":true,'
@@ -1036,6 +1161,8 @@ cmd_show() {
     printf 'backend  = %s\n' "$backend"
     printf 'status   = portrait=%s landscape=%s\n' "$status_text_portrait" "$status_text_landscape"
     printf 'bar_gap  = portrait=%s landscape=%s\n' "$bar_gap_portrait" "$bar_gap_landscape"
+    printf 'strip    = portrait=%s landscape=%s\n' "$strip_portrait" "$strip_landscape"
+    printf 'theme    = %s\n' "$theme"
     if [[ "$backend" == framebuffer ]]; then
         printf 'fbtft    = rotate=%s (counter-clockwise)\n' "$(fbtft_rotate "$rotation")"
         local fb_dev map
@@ -1176,6 +1303,12 @@ cmd_verify() {
         "$(grep -qxF "bar_gap_portrait = \"${bar_gap_portrait}\"" "$TOML" 2>/dev/null && echo y)"
     check "${TOML} matches bar_gap_landscape" \
         "$(grep -qxF "bar_gap_landscape = \"${bar_gap_landscape}\"" "$TOML" 2>/dev/null && echo y)"
+    check "${TOML} matches strip_portrait" \
+        "$(grep -qxF "strip_portrait = \"${strip_portrait}\"" "$TOML" 2>/dev/null && echo y)"
+    check "${TOML} matches strip_landscape" \
+        "$(grep -qxF "strip_landscape = \"${strip_landscape}\"" "$TOML" 2>/dev/null && echo y)"
+    check "${TOML} matches theme" \
+        "$(grep -qxF "theme = \"${theme}\"" "$TOML" 2>/dev/null && echo y)"
     if [[ "$backend" == framebuffer ]]; then
         local fb_dev
         if fb_dev="$(panel_fb_dev)"; then

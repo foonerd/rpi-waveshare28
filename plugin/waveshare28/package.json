@@ -13,7 +13,7 @@
     "icon": "fa-desktop",
     "plugin_type": "system_controller",
     "details": "Installs the Waveshare 2.8 inch SPI panel tool from the plugin payload and exposes only the settings that apply to this Raspberry Pi. armv6 boards (Pi 1, original Pi Zero) are not supported. Never edits volumioconfig.txt.",
-    "changelog": "Initial plugin: install the tool from payload, scope settings to the SBC, never edit volumioconfig.txt.",
+    "changelog": "Panel + UI sections. Theme, boot type and strip are live. Payload ships crate 1.6.0 armhf. Never edits volumioconfig.txt.",
     "categories": [
       "system_hardware"
     ],

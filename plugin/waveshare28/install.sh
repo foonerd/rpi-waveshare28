@@ -17,7 +17,7 @@ PLUGIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="/usr/local/bin"
 REPO="foonerd/rpi-waveshare28"
 RELEASE_BASE="https://github.com/${REPO}/releases/download"
-RUNTIME_TAG="runtime-v1.2.0"
+RUNTIME_TAG="runtime-v1.6.0"
 # Volumio requires /etc/sudoers.d/volumio-<plugin_name>
 SUDOERS_FILE="/etc/sudoers.d/volumio-waveshare28"
 

@@ -22,7 +22,10 @@ const SETTINGS_BACKUP_KEYS = [
   'status_text_portrait',
   'status_text_landscape',
   'bar_gap_portrait',
-  'bar_gap_landscape'
+  'bar_gap_landscape',
+  'strip_portrait',
+  'strip_landscape',
+  'theme'
 ];
 const PLUGIN_VERSION = require('./package.json').version;
 
@@ -121,6 +124,12 @@ function setSelect(item, value) {
     return String(o.value) === String(value);
   });
   item.value = match || { value: value, label: String(value) };
+}
+
+function findSection(uiconf, id) {
+  return (uiconf.sections || []).find(function (s) {
+    return s.id === id;
+  });
 }
 
 function setField(section, id, fn) {
@@ -235,8 +244,9 @@ Waveshare28.prototype.getUIConfig = function () {
 
       const board = state.board || self.board || {};
       const params = board.params || {};
-      const status = uiconf.sections[0];
-      const settings = uiconf.sections[1];
+      const status = findSection(uiconf, 'section_status');
+      const settings = findSection(uiconf, 'section_settings');
+      const ui = findSection(uiconf, 'section_ui');
 
       setField(status, 'board_family', function (item) {
         item.value = (board.family || '') + (board.revision ? ' (' + board.revision + ')' : '');
@@ -275,17 +285,26 @@ Waveshare28.prototype.getUIConfig = function () {
       setField(settings, 'hdmi', function (item) {
         item.value = state.hdmi === 'on';
       });
-      setField(settings, 'status_text_portrait', function (item) {
+      setField(ui, 'status_text_portrait', function (item) {
         setSelect(item, state.status_text_portrait || 'normal');
       });
-      setField(settings, 'status_text_landscape', function (item) {
+      setField(ui, 'status_text_landscape', function (item) {
         setSelect(item, state.status_text_landscape || 'normal');
       });
-      setField(settings, 'bar_gap_portrait', function (item) {
+      setField(ui, 'bar_gap_portrait', function (item) {
         setSelect(item, state.bar_gap_portrait || 'default');
       });
-      setField(settings, 'bar_gap_landscape', function (item) {
+      setField(ui, 'bar_gap_landscape', function (item) {
         setSelect(item, state.bar_gap_landscape || 'default');
+      });
+      setField(ui, 'strip_portrait', function (item) {
+        setSelect(item, state.strip_portrait || 'progress');
+      });
+      setField(ui, 'strip_landscape', function (item) {
+        setSelect(item, state.strip_landscape || 'progress');
+      });
+      setField(ui, 'theme', function (item) {
+        setSelect(item, state.theme || 'ink');
       });
 
       if (!params.hdmi) {
@@ -351,6 +370,9 @@ Waveshare28.prototype.saveSettings = function (data) {
     const statusLandscape = fieldValue(data, 'status_text_landscape');
     const barGapPortrait = fieldValue(data, 'bar_gap_portrait');
     const barGapLandscape = fieldValue(data, 'bar_gap_landscape');
+    const stripPortrait = fieldValue(data, 'strip_portrait');
+    const stripLandscape = fieldValue(data, 'strip_landscape');
+    const theme = fieldValue(data, 'theme');
     if (statusPortrait !== undefined) {
       args.push('status_text_portrait=' + statusPortrait);
     }
@@ -362,6 +384,15 @@ Waveshare28.prototype.saveSettings = function (data) {
     }
     if (barGapLandscape !== undefined) {
       args.push('bar_gap_landscape=' + barGapLandscape);
+    }
+    if (stripPortrait !== undefined) {
+      args.push('strip_portrait=' + stripPortrait);
+    }
+    if (stripLandscape !== undefined) {
+      args.push('strip_landscape=' + stripLandscape);
+    }
+    if (theme !== undefined) {
+      args.push('theme=' + theme);
     }
     if (args.length === 0) {
       defer.resolve();
@@ -616,6 +647,15 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   const barGapLandscape = values.bar_gap_landscape == null || values.bar_gap_landscape === ''
     ? 'default'
     : values.bar_gap_landscape;
+  const stripPortrait = values.strip_portrait == null || values.strip_portrait === ''
+    ? 'progress'
+    : values.strip_portrait;
+  const stripLandscape = values.strip_landscape == null || values.strip_landscape === ''
+    ? 'progress'
+    : values.strip_landscape;
+  const theme = values.theme == null || values.theme === ''
+    ? 'ink'
+    : values.theme;
   if (statusPortrait !== 'normal' && statusPortrait !== 'large') {
     return { ok: false, message: 'That settings backup has an invalid status_text_portrait.' };
   }
@@ -628,6 +668,15 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   if (barGapLandscape !== 'tight' && barGapLandscape !== 'default' && barGapLandscape !== 'roomy') {
     return { ok: false, message: 'That settings backup has an invalid bar_gap_landscape.' };
   }
+  if (stripPortrait !== 'progress' && stripPortrait !== 'stream' && stripPortrait !== 'off') {
+    return { ok: false, message: 'That settings backup has an invalid strip_portrait.' };
+  }
+  if (stripLandscape !== 'progress' && stripLandscape !== 'stream' && stripLandscape !== 'off') {
+    return { ok: false, message: 'That settings backup has an invalid strip_landscape.' };
+  }
+  if (theme !== 'ink' && theme !== 'dusk' && theme !== 'studio' && theme !== 'night') {
+    return { ok: false, message: 'That settings backup has an invalid theme.' };
+  }
   return {
     ok: true,
     values: {
@@ -639,7 +688,10 @@ Waveshare28.prototype.validateBackupValues = function (values) {
       status_text_portrait: statusPortrait,
       status_text_landscape: statusLandscape,
       bar_gap_portrait: barGapPortrait,
-      bar_gap_landscape: barGapLandscape
+      bar_gap_landscape: barGapLandscape,
+      strip_portrait: stripPortrait,
+      strip_landscape: stripLandscape,
+      theme: theme
     }
   };
 };
@@ -744,7 +796,10 @@ Waveshare28.prototype.restoreSettingsBackup = function (data) {
       'status_text_portrait=' + v.status_text_portrait,
       'status_text_landscape=' + v.status_text_landscape,
       'bar_gap_portrait=' + v.bar_gap_portrait,
-      'bar_gap_landscape=' + v.bar_gap_landscape
+      'bar_gap_landscape=' + v.bar_gap_landscape,
+      'strip_portrait=' + v.strip_portrait,
+      'strip_landscape=' + v.strip_landscape,
+      'theme=' + v.theme
     ];
     if (v.backend === 'framebuffer') {
       args.push('console=' + v.console);

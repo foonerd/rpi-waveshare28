@@ -12,7 +12,7 @@ Standalone. Not part of any Volumio or evo release stream.
     runtime/    userspace renderer and touch reader, Rust
     scripts/    installer and configurator
     plugin/     Volumio store plugin (wraps waveshare28-config)
-    docs/       CONFIG.md, BOOT-FLOW.md, design notes
+    docs/       CONFIG.md, BOOT-FLOW.md, UI.md
 
 They share nothing but the hardware. Different toolchains, different build
 systems, different outputs. Each has its own README and builds on its own.
@@ -41,7 +41,8 @@ verified against their published sha256 before installation.
 ## Configuration
 
 All of it is `waveshare28-config`. The full reference is
-[`docs/CONFIG.md`](docs/CONFIG.md).
+[`docs/CONFIG.md`](docs/CONFIG.md). Theme tokens, type and spacing are
+[`docs/UI.md`](docs/UI.md).
 
     waveshare28-config show
     waveshare28-config detect
@@ -57,7 +58,8 @@ everything else from it. `set`, `apply` and `recover` need root.
 Before Volumio's node process answers, the hostname and the host's addresses,
 updating as they are assigned, and the hotspot SSID if the AP is up. After
 `/status` is `ready` and the first `getState` succeeds, the player. Tap
-the cover to see the addresses again for ten seconds.
+the IP ring for Status, the cover for Artwork. Boxes, type and tokens:
+[`docs/UI.md`](docs/UI.md).
 
 The renderer starts early and does not wait for `volumio.service`. Without
 that the panel is dark for most of a minute, and the address is the one thing

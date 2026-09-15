@@ -49,10 +49,8 @@ impl Default for StatusText {
     }
 }
 
-/// Vertical space between the volume slider and the progress bar.
-///
-/// Named steps, not pixels. Extra room is taken from album art, never from
-/// the transport strip (40 px hit targets).
+/// Named gap step. Face compose ignores this: A.1 / A.2 set the boxes.
+/// The key stays so `deny_unknown_fields` cannot smuggle a typo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BarGap {
@@ -64,6 +62,55 @@ pub enum BarGap {
 impl Default for BarGap {
     fn default() -> Self {
         Self::Default
+    }
+}
+
+/// What occupies the seek slot on the resting face.
+///
+/// Default is the progress bar. `stream` paints the IN fields the source
+/// wrote (`trackType` / `codec` / `bitdepth` / `samplerate` /
+/// `bitrate`). `off` hides the slot and grows art. Never invents an
+/// ALSA OUT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Strip {
+    Progress,
+    Stream,
+    Off,
+}
+
+impl Default for Strip {
+    fn default() -> Self {
+        Self::Progress
+    }
+}
+
+/// Named colour set. Tokens, not a CSS engine. ADR-0020: `ink` is the
+/// shipped panel; `dusk`, `studio` and `night` are the table words.
+/// Live after `set`; no reboot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Ink,
+    Dusk,
+    Studio,
+    Night,
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ink => "ink",
+            Self::Dusk => "dusk",
+            Self::Studio => "studio",
+            Self::Night => "night",
+        }
+    }
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::Ink
     }
 }
 
@@ -131,6 +178,12 @@ pub struct Config {
     pub bar_gap_portrait: BarGap,
     /// Volume-to-progress gap on landscape rotations.
     pub bar_gap_landscape: BarGap,
+    /// Strip occupancy on portrait rotations (0, 180).
+    pub strip_portrait: Strip,
+    /// Strip occupancy on landscape rotations (90, 270).
+    pub strip_landscape: Strip,
+    /// Colour tokens. Default is the shipped ink set.
+    pub theme: Theme,
 
     /// Volumio state endpoint.
     pub state_url: String,
@@ -142,9 +195,9 @@ pub struct Config {
     pub art_base: String,
     /// How often to poll it, milliseconds.
     pub poll_interval_ms: u64,
-    /// Minimum gap between two accepted touches, milliseconds. The controller
-    /// reports repeatedly while a finger is held; this is what stops one press
-    /// becoming a burst of commands.
+    /// Minimum gap between two accepted press-downs, milliseconds.
+    /// Default is 50. Hold-to-repeat and seek-scrub live in the main
+    /// loop, not here.
     pub touch_debounce_ms: u64,
 }
 
@@ -171,13 +224,16 @@ impl Default for Config {
             status_text_landscape: StatusText::Normal,
             bar_gap_portrait: BarGap::Default,
             bar_gap_landscape: BarGap::Default,
+            strip_portrait: Strip::Progress,
+            strip_landscape: Strip::Progress,
+            theme: Theme::Ink,
 
             state_url: "http://localhost:3000/api/v1/getState".into(),
             status_url: "http://localhost:3000/status".into(),
             command_url: "http://localhost:3000/api/v1/commands/".into(),
             art_base: "http://localhost:3000".into(),
             poll_interval_ms: 500,
-            touch_debounce_ms: 300,
+            touch_debounce_ms: 50,
         }
     }
 }
@@ -247,6 +303,15 @@ impl Config {
             self.bar_gap_portrait
         }
     }
+
+    /// Strip occupancy for the configured rotation.
+    pub fn strip(&self) -> Strip {
+        if matches!(self.rotation, 90 | 270) {
+            self.strip_landscape
+        } else {
+            self.strip_portrait
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +335,10 @@ mod tests {
         assert_eq!(cfg.fb_dev, "/dev/fb1");
         assert_eq!(cfg.status_text_portrait, StatusText::Normal);
         assert_eq!(cfg.bar_gap_landscape, BarGap::Default);
+        assert_eq!(cfg.strip_portrait, Strip::Progress);
+        assert_eq!(cfg.strip_landscape, Strip::Progress);
+        assert_eq!(cfg.theme, Theme::Ink);
+        assert_eq!(cfg.touch_debounce_ms, 50);
     }
 
     #[test]
@@ -322,13 +391,25 @@ mod tests {
             "status_text_portrait = \"large\"\n\
              status_text_landscape = \"normal\"\n\
              bar_gap_portrait = \"roomy\"\n\
-             bar_gap_landscape = \"tight\"\n",
+             bar_gap_landscape = \"tight\"\n\
+             strip_portrait = \"off\"\n\
+             strip_landscape = \"stream\"\n\
+             theme = \"dusk\"\n",
         );
         let cfg = Config::load(f.path()).unwrap();
         assert_eq!(cfg.status_text_portrait, StatusText::Large);
         assert_eq!(cfg.status_text_landscape, StatusText::Normal);
         assert_eq!(cfg.bar_gap_portrait, BarGap::Roomy);
         assert_eq!(cfg.bar_gap_landscape, BarGap::Tight);
+        assert_eq!(cfg.strip_portrait, Strip::Off);
+        assert_eq!(cfg.strip_landscape, Strip::Stream);
+        assert_eq!(cfg.theme, Theme::Dusk);
+        let f = write("theme = \"studio\"\n");
+        assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Studio);
+        let f = write("theme = \"ink\"\n");
+        assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Ink);
+        let f = write("theme = \"night\"\n");
+        assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Night);
     }
 
     #[test]
@@ -336,6 +417,10 @@ mod tests {
         let f = write("bar_gap_portrait = \"12px\"\n");
         assert!(Config::load(f.path()).is_err());
         let f = write("status_text_landscape = \"huge\"\n");
+        assert!(Config::load(f.path()).is_err());
+        let f = write("strip_portrait = \"pcm\"\n");
+        assert!(Config::load(f.path()).is_err());
+        let f = write("theme = \"neon\"\n");
         assert!(Config::load(f.path()).is_err());
     }
 
