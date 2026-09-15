@@ -2,6 +2,11 @@
 //!
 //! One surface at a time. Close on 10 s inactivity or an outside tap.
 //! Token map is the same as the face: accent is volume fill only.
+//!
+//! Status and metadata fill leftover body with `FONT_10X20` — the biggest
+//! stock face. A.3's ~11/~9/~8 map wasted the column on glass. Line caps
+//! come from leftover height so the same scale fits both orientations.
+//! The resting face keeps `TITLE_FONT` / `META_FONT`.
 
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoFont, MonoTextStyle},
@@ -12,12 +17,21 @@ use embedded_graphics::{
 };
 
 use crate::art::Art;
-use crate::config::StatusText;
 use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::ui::{self, Layout, Palette, META_FONT, TITLE_FONT};
 
 const SURFACE_HOLD: u64 = 10;
+/// Biggest stock mono face. Status + metadata only; IPv6 wraps.
+const SURF_FONT: &MonoFont = &FONT_10X20;
+const SURF_LINE_PAD: i32 = 2;
+const SURF_FIELD_GAP: i32 = 8;
+/// After title, before the format block.
+const META_GAPS: i32 = SURF_FIELD_GAP * 2;
+/// Title · artist · album · stream · service.
+const META_WEIGHTS: [u32; 5] = [3, 2, 2, 1, 1];
+const META_MINS: [usize; 5] = [2, 1, 1, 1, 1];
+const META_MAXS: [usize; 5] = [6, 4, 4, 3, 2];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -571,6 +585,69 @@ where
     Ok(())
 }
 
+fn text_col(layout: &Layout) -> MetaCol {
+    let b = body(layout);
+    MetaCol {
+        x: b.top_left.x + 12,
+        width: b.size.width.saturating_sub(24),
+        top: b.top_left.y + 8,
+        floor: b.top_left.y + b.size.height as i32 - 8,
+    }
+}
+
+fn surf_line_h() -> i32 {
+    SURF_FONT.character_size.height as i32 + SURF_LINE_PAD
+}
+
+/// Split leftover body lines across the five metadata fields.
+/// Same weights both ways; the taller portrait body gets more title.
+fn metadata_caps(col: MetaCol) -> [usize; 5] {
+    let usable = (col.floor - col.top - META_GAPS).max(0);
+    let budget = (usable / surf_line_h()) as usize;
+    distribute(budget, &META_WEIGHTS, &META_MINS, &META_MAXS)
+}
+
+fn distribute(budget: usize, weights: &[u32], mins: &[usize], maxs: &[usize]) -> [usize; 5] {
+    let mut caps = [0usize; 5];
+    let mut used = 0usize;
+    for i in 0..5 {
+        caps[i] = mins[i];
+        used = used.saturating_add(mins[i]);
+    }
+    let extra = budget.saturating_sub(used);
+    let wsum: u32 = weights.iter().sum();
+    let mut given = 0usize;
+    if wsum > 0 {
+        for i in 0..5 {
+            let share = extra * weights[i] as usize / wsum as usize;
+            let room = maxs[i].saturating_sub(caps[i]);
+            let add = share.min(room);
+            caps[i] += add;
+            given += add;
+        }
+    }
+    let mut left = extra.saturating_sub(given);
+    while left > 0 {
+        let mut grew = false;
+        let mut order: [usize; 5] = [0, 1, 2, 3, 4];
+        order.sort_by(|a, b| weights[*b].cmp(&weights[*a]).then(a.cmp(b)));
+        for i in order {
+            if left == 0 {
+                break;
+            }
+            if caps[i] < maxs[i] {
+                caps[i] += 1;
+                left -= 1;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    caps
+}
+
 fn draw_metadata<D>(
     target: &mut D,
     layout: &Layout,
@@ -580,37 +657,30 @@ fn draw_metadata<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let b = body(layout);
-    let mut y = b.top_left.y + 8;
-    let x = b.top_left.x + 12;
-    let width = b.size.width.saturating_sub(24);
-    let col = MetaCol {
-        x,
-        width,
-        floor: b.top_left.y + b.size.height as i32 - 8,
-    };
+    let col = text_col(layout);
+    let [title_n, artist_n, album_n, stream_n, service_n] = metadata_caps(col);
+    let mut y = col.top;
     y = paint_wrapped(
         target,
         state.title.as_deref().unwrap_or(""),
         y,
-        TITLE_FONT,
         pal.title,
-        6,
+        title_n,
         col,
     )?;
-    y += 8;
+    y += SURF_FIELD_GAP;
     if let Some(a) = state.artist.as_deref() {
-        y = paint_wrapped(target, a, y, META_FONT, pal.meta, 4, col)?;
+        y = paint_wrapped(target, a, y, pal.meta, artist_n, col)?;
     }
     if let Some(a) = state.album.as_deref() {
-        y = paint_wrapped(target, a, y, META_FONT, pal.dim, 4, col)?;
+        y = paint_wrapped(target, a, y, pal.dim, album_n, col)?;
     }
-    y += 8;
+    y += SURF_FIELD_GAP;
     if let Some(info) = state.stream_info() {
-        y = paint_wrapped(target, &info, y, META_FONT, pal.meta, 3, col)?;
+        y = paint_wrapped(target, &info, y, pal.meta, stream_n, col)?;
     }
     if let Some(svc) = state.service.as_deref() {
-        paint_wrapped(target, svc, y, META_FONT, pal.meta, 2, col)?;
+        paint_wrapped(target, svc, y, pal.meta, service_n, col)?;
     }
     Ok(())
 }
@@ -619,6 +689,7 @@ where
 struct MetaCol {
     x: i32,
     width: u32,
+    top: i32,
     floor: i32,
 }
 
@@ -626,7 +697,6 @@ fn paint_wrapped<D>(
     target: &mut D,
     text: &str,
     mut y: i32,
-    font: &MonoFont<'static>,
     colour: Rgb565,
     max_lines: usize,
     col: MetaCol,
@@ -637,16 +707,16 @@ where
     if text.is_empty() {
         return Ok(y);
     }
-    let lines = ui::wrap(text, col.width, font);
-    let line_h = font.character_size.height as i32 + 2;
-    let face = MonoTextStyle::new(font, colour);
+    let lines = ui::wrap(text, col.width, SURF_FONT);
+    let line_h = surf_line_h();
+    let face = MonoTextStyle::new(SURF_FONT, colour);
     let top = TextStyleBuilder::new()
         .baseline(Baseline::Top)
         .alignment(Alignment::Left)
         .build();
     let cap = lines.len().min(max_lines);
     for (i, line) in lines.iter().take(cap).enumerate() {
-        if y + font.character_size.height as i32 > col.floor {
+        if y + SURF_FONT.character_size.height as i32 > col.floor {
             break;
         }
         let t = if i + 1 == cap && lines.len() > cap {
@@ -672,52 +742,42 @@ fn draw_status<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let b = body(layout);
-    let mut y = b.top_left.y + 8;
-    let x = b.top_left.x + 12;
-    let ip_font = if layout.status_text == StatusText::Large {
-        &FONT_10X20
-    } else {
-        TITLE_FONT
-    };
-    if let Some(a) = host.addrs.first() {
-        Text::new(
+    let col = text_col(layout);
+    let mut y = col.top;
+    for a in &host.addrs {
+        y = paint_wrapped(
+            target,
             &format!("{}  {}", a.link.label(), a.addr),
-            Point::new(x, y),
-            MonoTextStyle::new(ip_font, pal.title),
-        )
-        .draw(target)?;
-        y += ip_font.character_size.height as i32 + 6;
+            y,
+            pal.title,
+            4,
+            col,
+        )?;
+        y += SURF_FIELD_GAP;
     }
-    Text::new(
-        &host.hostname,
-        Point::new(x, y),
-        MonoTextStyle::new(META_FONT, pal.meta),
-    )
-    .draw(target)?;
-    y += 14;
+    y = paint_wrapped(target, &host.hostname, y, pal.meta, 3, col)?;
+    y += SURF_FIELD_GAP;
     if let Some(info) = state.stream_info() {
-        Text::new(
-            &info,
-            Point::new(x, y),
-            MonoTextStyle::new(META_FONT, pal.meta),
-        )
-        .draw(target)?;
-        y += 14;
+        y = paint_wrapped(target, &info, y, pal.meta, 3, col)?;
+        y += SURF_FIELD_GAP;
     }
-    Text::new(
+    paint_wrapped(
+        target,
         &format!("waveshare28  {}", layout.theme.as_str()),
-        Point::new(x, y),
-        MonoTextStyle::new(META_FONT, pal.dim),
-    )
-    .draw(target)?;
+        y,
+        pal.dim,
+        2,
+        col,
+    )?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{self, Layout, META_FONT};
+    use super::{metadata_caps, surf_line_h, text_col, META_GAPS, META_MINS, SURF_FONT};
+    use crate::ui::{self, Layout};
+    use embedded_graphics::mono_font::ascii::FONT_10X20;
 
     #[test]
     fn header_and_artwork_close() {
@@ -844,11 +904,51 @@ mod tests {
     #[test]
     fn metadata_album_wraps_to_the_column() {
         let l = Layout::for_rotation(270);
-        let width = l.frame.size.width.saturating_sub(24);
+        let width = text_col(&l).width;
         let album = "A Very Long Album Title That Would Drive Into The Neighbour Driveway";
-        let parts = ui::wrap(album, width, META_FONT);
+        let parts = ui::wrap(album, width, SURF_FONT);
         assert!(parts.len() >= 2, "{parts:?}");
-        let cols = (width / META_FONT.character_size.width) as usize;
+        let cols = (width / SURF_FONT.character_size.width) as usize;
+        assert!(parts.iter().all(|p| p.chars().count() <= cols));
+    }
+
+    fn stack_px(caps: [usize; 5]) -> i32 {
+        let lines: usize = caps.iter().sum();
+        lines as i32 * surf_line_h() + META_GAPS
+    }
+
+    #[test]
+    fn text_surfaces_use_the_largest_stock_face() {
+        assert_eq!(SURF_FONT.character_size, FONT_10X20.character_size);
+        for rot in [0, 270] {
+            let l = Layout::for_rotation(rot);
+            let col = text_col(&l);
+            assert!(
+                col.width >= SURF_FONT.character_size.width * 21,
+                "rot {rot}: IPv4 must fit one line"
+            );
+            let caps = metadata_caps(col);
+            assert!(
+                stack_px(caps) <= col.floor - col.top,
+                "rot {rot}: {caps:?} stack {} > {}",
+                stack_px(caps),
+                col.floor - col.top
+            );
+            assert!(caps[0] >= 2);
+            assert!(caps.iter().sum::<usize>() >= META_MINS.iter().sum());
+        }
+        let p = metadata_caps(text_col(&Layout::for_rotation(0)));
+        let l = metadata_caps(text_col(&Layout::for_rotation(270)));
+        assert!(p[0] >= l[0], "taller body keeps the title lines");
+    }
+
+    #[test]
+    fn status_ipv6_wraps_to_the_column() {
+        let col = text_col(&Layout::for_rotation(0));
+        let v6 = "wlan0  fe80::1a2b:3c4d:5e6f:7890";
+        let parts = ui::wrap(v6, col.width, SURF_FONT);
+        assert!(parts.len() >= 2, "{parts:?}");
+        let cols = (col.width / SURF_FONT.character_size.width) as usize;
         assert!(parts.iter().all(|p| p.chars().count() <= cols));
     }
 
