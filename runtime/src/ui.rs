@@ -35,6 +35,17 @@ pub const NATIVE_W: u16 = 240;
 /// Panel height in the controller's native frame.
 pub const NATIVE_H: u16 = 320;
 
+/// Portrait dock / seek hits. Glyph 22 sits in 52 with 15 px pad — that
+/// pad is divider-to-icon; icon-to-seek matches it. Seek chrome sits at
+/// the top of the 32 px strip so the trough is not a second gap.
+const PORTRAIT_DOCK_H: u32 = 52;
+const PORTRAIT_SEEK_H: u32 = 32;
+/// Two TITLE_FONT lines (15+2+15) plus pad. Artist / album are off the face.
+const PORTRAIT_TITLE_H: u32 = 40;
+const PORTRAIT_ART_GAP: i32 = 10;
+/// Square whose right edge stays at the IP ring (x 214 → inset 26).
+const PORTRAIT_ART_MAX: u32 = 188;
+
 pub(crate) const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
 pub(crate) const META_FONT: &MonoFont = &FONT_6X10;
 
@@ -144,7 +155,7 @@ pub struct Layout {
     pub frame: Rectangle,
     /// Album art.
     pub art: Rectangle,
-    /// Title / artist / album block. Tap opens metadata.
+    /// Title block (portrait: title only). Tap opens metadata.
     pub text: Rectangle,
     /// `i` ring hit target.
     pub info: Rectangle,
@@ -265,23 +276,28 @@ impl Layout {
         }
     }
 
-    /// ADR-0020 A.1. 240×320. Art 152, dock 52, seek 32. Off grows art
-    /// and drops the dock to the bottom edge.
+    /// Portrait face. Dock 52 / seek 32 stay the A.1 hits. Title only
+    /// (artist / album live on Metadata). Art is the leftover square,
+    /// capped so its right edge stays off the IP ring at x 214.
     fn portrait(rotation: u16, status_text: StatusText, strip: Strip, theme: Theme) -> Self {
-        let seek_on = strip != Strip::Off;
-        let (art_h, text_y, dock_y, seek_y, seek_h) = if seek_on {
-            (152, 162, 236, 288, 32)
+        let seek_h = if strip != Strip::Off {
+            PORTRAIT_SEEK_H
         } else {
-            (184, 194, 268, 320, 0)
+            0
         };
+        let dock_y = 320 - seek_h as i32 - PORTRAIT_DOCK_H as i32;
+        let text_y = dock_y - PORTRAIT_TITLE_H as i32;
+        let art_budget = (text_y - PORTRAIT_ART_GAP).max(0) as u32;
+        let art_side = art_budget.min(PORTRAIT_ART_MAX);
+        let art_x = (240 - art_side as i32) / 2;
         Self {
             rotation,
             frame: rect(0, 0, 240, 320),
-            art: rect(44, 0, 152, art_h),
-            text: rect(12, text_y, 216, 74),
+            art: rect(art_x, 0, art_side, art_side),
+            text: rect(12, text_y, 216, PORTRAIT_TITLE_H),
             info: rect(192, 0, 48, 48),
-            dock: rect(0, dock_y, 240, 52),
-            progress: rect(0, seek_y, 240, seek_h),
+            dock: rect(0, dock_y, 240, PORTRAIT_DOCK_H),
+            progress: rect(0, dock_y + PORTRAIT_DOCK_H as i32, 240, seek_h),
             status_text,
             strip,
             theme,
@@ -851,8 +867,9 @@ where
 
 /// A.1 / A.2 status ring. Hit stays 48×48 / 44×44.
 const INFO_RING: u32 = 18;
-/// A.1: ring ø18 top-left. Hit is the larger 48×48.
-const INFO_RING_PORTRAIT: Point = Point::new(214, 8);
+/// Portrait: ø18, 2 px in from the top-right of the frame. Hit stays
+/// the A.1 48×48 in that corner — the ring used to sit on the art.
+const INFO_RING_PORTRAIT: Point = Point::new(220, 2);
 
 /// Inset from the art column. A.2 pad 10. Portrait A.1 already starts
 /// at x 12, y 162 — do not add this again.
@@ -893,7 +910,7 @@ fn face_text_width(layout: &Layout) -> u32 {
     }
 }
 
-/// Clip box for title / artist / album.
+/// Clip box for the face title block.
 pub fn face_text_slot(layout: &Layout) -> Rectangle {
     let origin = face_text_origin(layout);
     let bottom = layout.text.top_left.y + layout.text.size.height as i32;
@@ -1155,7 +1172,14 @@ where
     match layout.strip {
         Strip::Off => Ok(()),
         Strip::Stream => draw_stream_info(target, layout.progress, state, pal),
-        Strip::Progress => draw_seek_strip(target, layout.progress, state, pal, scrub),
+        Strip::Progress => draw_seek_strip(
+            target,
+            layout.progress,
+            state,
+            pal,
+            scrub,
+            is_portrait(layout),
+        ),
     }
 }
 
@@ -1214,14 +1238,29 @@ fn fmt_clock(secs: u64) -> String {
     }
 }
 
+/// Knob is 12 px. Top-aligned chrome hangs it from the slot top so the
+/// trough is not a second gap under the dock icons.
+const SEEK_KNOB_H: i32 = 12;
+
+fn seek_chrome_cy(slot: Rectangle, align_top: bool) -> i32 {
+    if align_top {
+        SEEK_KNOB_H / 2
+    } else {
+        slot.size.height as i32 / 2
+    }
+}
+
 /// Seek strip: clocks, title-coloured fill, 4×12 knob. `scrub` overrides
-/// the live fraction while a finger is down.
+/// the live fraction while a finger is down. Portrait face passes
+/// `align_top` so the trough sits under the dock pad, not in the middle
+/// of the strip.
 pub(crate) fn draw_seek_strip<D>(
     target: &mut D,
     slot: Rectangle,
     state: &PlayerState,
     pal: Palette,
     scrub: Option<f32>,
+    align_top: bool,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -1248,7 +1287,8 @@ where
     let track_x = pad + clock_w + gap;
     let inner_w = slot.size.width.saturating_sub(track_x * 2);
     let bar_h = 6u32.min(slot.size.height.saturating_sub(4));
-    let bar_y = (slot.size.height.saturating_sub(bar_h)) / 2;
+    let cy = seek_chrome_cy(slot, align_top);
+    let bar_y = (cy - bar_h as i32 / 2).max(0) as u32;
 
     let mut buf = RowBuf::new(slot.size, pal.bg);
     let style = MonoTextStyle::new(META_FONT, pal.meta);
@@ -1260,7 +1300,6 @@ where
         .baseline(Baseline::Middle)
         .alignment(Alignment::Right)
         .build();
-    let cy = slot.size.height as i32 / 2;
     let _ =
         Text::with_text_style(&left, Point::new(pad as i32, cy), style, left_align).draw(&mut buf);
     let _ = Text::with_text_style(
@@ -1278,7 +1317,10 @@ where
         );
         let _ = fill_bar(&mut buf, track, frac, pal.dim, pal.title);
         let kx = track.top_left.x + (track.size.width as f32 * frac.clamp(0.0, 1.0)) as i32;
-        let knob = Rectangle::new(Point::new(kx - 2, cy - 6), Size::new(4, 12));
+        let knob = Rectangle::new(
+            Point::new(kx - 2, cy - SEEK_KNOB_H / 2),
+            Size::new(4, SEEK_KNOB_H as u32),
+        );
         let _ = knob
             .into_styled(PrimitiveStyle::with_fill(pal.title))
             .draw(&mut buf);
@@ -1330,12 +1372,26 @@ mod tests {
     #[test]
     fn portrait_matches_adr0020_a1() {
         let l = Layout::for_rotation(0);
-        assert_eq!(origin(l.art), (44, 0, 152, 152));
-        assert_eq!(origin(l.text), (12, 162, 216, 74));
+        // Title-only + leftover square. Dock / seek / info hits stay A.1.
+        assert_eq!(origin(l.art), (27, 0, 186, 186));
+        assert_eq!(origin(l.text), (12, 196, 216, 40));
         assert_eq!(origin(l.info), (192, 0, 48, 48));
         assert_eq!(origin(l.dock), (0, 236, 240, 52));
         assert_eq!(origin(l.progress), (0, 288, 240, 32));
+        assert_eq!(l.art.size.width, l.art.size.height);
+        assert!(l.art.top_left.x + l.art.size.width as i32 <= INFO_RING_PORTRAIT.x);
         assert_eq!(l.theme, Theme::Ink);
+    }
+
+    #[test]
+    fn portrait_icon_to_seek_matches_divider_to_icon() {
+        let l = Layout::for_rotation(0);
+        let ring = Circle::with_center(dock_glyph_center(l.dock_cell(0)), DOCK_GLYPH as u32);
+        let from_divider = ring.top_left.y - l.dock.top_left.y;
+        let to_seek = l.progress.top_left.y - (ring.top_left.y + DOCK_GLYPH);
+        assert_eq!(from_divider, to_seek);
+        assert_eq!(seek_chrome_cy(l.progress, true), SEEK_KNOB_H / 2);
+        assert!(seek_chrome_cy(l.progress, true) < seek_chrome_cy(l.progress, false));
     }
 
     #[test]
@@ -1381,9 +1437,15 @@ mod tests {
         assert_eq!(o.x, 210);
         assert_eq!(o.y, 44);
         let p = Layout::for_rotation(0);
-        assert_eq!(face_text_origin(&p), Point::new(12, 162));
-        assert_eq!(origin(face_text_slot(&p)), (12, 162, 216, 74));
+        assert_eq!(face_text_origin(&p), Point::new(12, 196));
+        assert_eq!(origin(face_text_slot(&p)), (12, 196, 216, 40));
         assert_eq!(INFO_RING, 18);
+        assert_eq!(INFO_RING_PORTRAIT, Point::new(220, 2));
+        assert_eq!(
+            INFO_RING_PORTRAIT.x + INFO_RING as i32,
+            238,
+            "2 px in from the right edge"
+        );
         assert_eq!(
             info_ring_center(&p),
             Circle::new(INFO_RING_PORTRAIT, INFO_RING).center()
@@ -1397,8 +1459,8 @@ mod tests {
         let mut pane = TextPane::default();
         pane.set(
             "A long title that must wrap more than twice so the block is taller than the slot",
-            "An artist name that also wraps on the portrait column",
-            "And an album title that adds a third field",
+            "",
+            "",
             slot,
         );
         assert!(pane.over > 0);
@@ -1412,8 +1474,8 @@ mod tests {
         assert!(pane.offset > 0);
         pane.set(
             "A long title that must wrap more than twice so the block is taller than the slot",
-            "An artist name that also wraps on the portrait column",
-            "And an album title that adds a third field",
+            "",
+            "",
             slot,
         );
         assert!(pane.offset > 0, "same strings must not restart the scroll");
@@ -1458,9 +1520,11 @@ mod tests {
             Strip::Off,
             Theme::Ink,
         );
-        assert_eq!(p.art.size.height, 184);
         assert_eq!(p.progress.size.height, 0);
         assert_eq!(origin(p.dock), (0, 268, 240, 52));
+        assert_eq!(p.art.size.width, p.art.size.height);
+        assert!(p.art.size.height >= 186);
+        assert!(p.art.size.height <= PORTRAIT_ART_MAX);
     }
 
     #[test]

@@ -200,6 +200,7 @@ where
         state,
         layout.pal(),
         scrub,
+        false,
     )
 }
 
@@ -476,6 +477,41 @@ where
     }
 }
 
+/// Contain: scale until the first frame edge is hit, then letterbox.
+fn contain_rect(frame: Rectangle, art_w: u32, art_h: u32) -> Rectangle {
+    if art_w == 0 || art_h == 0 {
+        return Rectangle::new(frame.top_left, Size::zero());
+    }
+    let fw = frame.size.width;
+    let fh = frame.size.height;
+    let (w, h) = if art_w.saturating_mul(fh) <= art_h.saturating_mul(fw) {
+        (art_w.saturating_mul(fh) / art_h, fh)
+    } else {
+        (fw, art_h.saturating_mul(fw) / art_w)
+    };
+    let w = w.max(1).min(fw);
+    let h = h.max(1).min(fh);
+    let x = frame.top_left.x + (fw as i32 - w as i32) / 2;
+    let y = frame.top_left.y + (fh as i32 - h as i32) / 2;
+    Rectangle::new(Point::new(x, y), Size::new(w, h))
+}
+
+fn scale_nearest(art: &Art, dw: u32, dh: u32) -> Vec<Rgb565> {
+    if dw == art.w && dh == art.h {
+        return art.px.clone();
+    }
+    let mut out = Vec::with_capacity((dw * dh) as usize);
+    for y in 0..dh {
+        let sy = ((y as u64 * art.h as u64) / dh as u64).min(art.h as u64 - 1) as u32;
+        let row = sy * art.w;
+        for x in 0..dw {
+            let sx = ((x as u64 * art.w as u64) / dw as u64).min(art.w as u64 - 1) as u32;
+            out.push(art.px[(row + sx) as usize]);
+        }
+    }
+    out
+}
+
 fn draw_artwork<D>(
     target: &mut D,
     layout: &Layout,
@@ -487,13 +523,11 @@ where
 {
     let frame = layout.frame;
     if let Some(art) = art {
-        let side = frame.size.width.min(frame.size.height);
-        let w = art.w.min(side);
-        let h = art.h.min(side);
-        let x = frame.top_left.x + (frame.size.width as i32 - w as i32) / 2;
-        let y = frame.top_left.y + (frame.size.height as i32 - h as i32) / 2;
-        let placed = Rectangle::new(Point::new(x, y), Size::new(w, h));
-        target.fill_contiguous(&placed, art.px.iter().copied())?;
+        let placed = contain_rect(frame, art.w, art.h);
+        if placed.size.width > 0 && placed.size.height > 0 {
+            let px = scale_nearest(art, placed.size.width, placed.size.height);
+            target.fill_contiguous(&placed, px.into_iter())?;
+        }
     }
     let style = MonoTextStyle::new(META_FONT, pal.dim);
     Text::new(
@@ -527,7 +561,7 @@ where
         play_icon(target, transport[1].center(), pal.title)?;
     }
     skip_icon(target, transport[2].center(), pal.meta, true)?;
-    ui::draw_seek_strip(target, rows[1], state, pal, scrub)?;
+    ui::draw_seek_strip(target, rows[1], state, pal, scrub, false)?;
     let modes = thirds_wide(rows[2], false);
     mode_cell(target, modes[0], "SHUF", state.random.unwrap_or(false), pal)?;
     mode_cell(target, modes[1], "REP", state.repeat.unwrap_or(false), pal)?;
@@ -775,9 +809,48 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::{metadata_caps, surf_line_h, text_col, META_GAPS, META_MINS, SURF_FONT};
+    use super::{
+        contain_rect, metadata_caps, scale_nearest, surf_line_h, text_col, META_GAPS, META_MINS,
+        SURF_FONT,
+    };
+    use crate::art::Art;
     use crate::ui::{self, Layout};
     use embedded_graphics::mono_font::ascii::FONT_10X20;
+    use embedded_graphics::pixelcolor::Rgb565;
+
+    fn origin(r: Rectangle) -> (i32, i32, u32, u32) {
+        (r.top_left.x, r.top_left.y, r.size.width, r.size.height)
+    }
+
+    #[test]
+    fn artwork_contains_to_the_nearest_edge() {
+        let p = Layout::for_rotation(0).frame;
+        assert_eq!(origin(contain_rect(p, 186, 186)), (0, 40, 240, 240));
+        let l = Layout::for_rotation(270).frame;
+        assert_eq!(origin(contain_rect(l, 186, 186)), (40, 0, 240, 240));
+        assert_eq!(origin(contain_rect(p, 200, 100)), (0, 100, 240, 120));
+        assert_eq!(origin(contain_rect(p, 100, 200)), (40, 0, 160, 320));
+    }
+
+    #[test]
+    fn artwork_scale_keeps_corners() {
+        let art = Art {
+            w: 2,
+            h: 2,
+            px: vec![
+                Rgb565::new(31, 0, 0),
+                Rgb565::new(0, 63, 0),
+                Rgb565::new(0, 0, 31),
+                Rgb565::new(31, 63, 31),
+            ],
+        };
+        let out = scale_nearest(&art, 4, 4);
+        assert_eq!(out.len(), 16);
+        assert_eq!(out[0], art.px[0]);
+        assert_eq!(out[3], art.px[1]);
+        assert_eq!(out[12], art.px[2]);
+        assert_eq!(out[15], art.px[3]);
+    }
 
     #[test]
     fn header_and_artwork_close() {

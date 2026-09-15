@@ -230,10 +230,19 @@ fn run(cfg: Config) -> Result<()> {
             shown = None;
         }
 
+        let portrait = layout.frame.size.height > layout.frame.size.width;
         pane.set(
             current.title.as_deref().unwrap_or(""),
-            current.artist.as_deref().unwrap_or(""),
-            current.album.as_deref().unwrap_or(""),
+            if portrait {
+                ""
+            } else {
+                current.artist.as_deref().unwrap_or("")
+            },
+            if portrait {
+                ""
+            } else {
+                current.album.as_deref().unwrap_or("")
+            },
             face_text_slot(&layout),
         );
 
