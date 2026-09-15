@@ -867,9 +867,10 @@ where
 
 /// A.1 / A.2 status ring. Hit stays 48×48 / 44×44.
 const INFO_RING: u32 = 18;
-/// Portrait: ø18, 2 px in from the top-right of the frame. Hit stays
-/// the A.1 48×48 in that corner — the ring used to sit on the art.
+/// ø18, 2 px in from the top-right of the frame. Hits stay the A.1 / A.2
+/// corner boxes — the ring used to sit on the cover in portrait.
 const INFO_RING_PORTRAIT: Point = Point::new(220, 2);
+const INFO_RING_LANDSCAPE: Point = Point::new(300, 2);
 
 /// Inset from the art column. A.2 pad 10. Portrait A.1 already starts
 /// at x 12, y 162 — do not add this again.
@@ -880,11 +881,12 @@ fn is_portrait(layout: &Layout) -> bool {
 }
 
 fn info_ring_center(layout: &Layout) -> Point {
-    if is_portrait(layout) {
-        Circle::new(INFO_RING_PORTRAIT, INFO_RING).center()
+    let origin = if is_portrait(layout) {
+        INFO_RING_PORTRAIT
     } else {
-        layout.info.center()
-    }
+        INFO_RING_LANDSCAPE
+    };
+    Circle::new(origin, INFO_RING).center()
 }
 
 /// Top-left of the title block. Portrait is A.1. Landscape starts under
@@ -1435,14 +1437,24 @@ mod tests {
         assert_eq!(origin(face_text_slot(&p)), (12, 196, 216, 40));
         assert_eq!(INFO_RING, 18);
         assert_eq!(INFO_RING_PORTRAIT, Point::new(220, 2));
+        assert_eq!(INFO_RING_LANDSCAPE, Point::new(300, 2));
         assert_eq!(
             INFO_RING_PORTRAIT.x + INFO_RING as i32,
             238,
-            "2 px in from the right edge"
+            "2 px in from the portrait right edge"
+        );
+        assert_eq!(
+            INFO_RING_LANDSCAPE.x + INFO_RING as i32,
+            318,
+            "2 px in from the landscape right edge"
         );
         assert_eq!(
             info_ring_center(&p),
             Circle::new(INFO_RING_PORTRAIT, INFO_RING).center()
+        );
+        assert_eq!(
+            info_ring_center(&l),
+            Circle::new(INFO_RING_LANDSCAPE, INFO_RING).center()
         );
     }
 

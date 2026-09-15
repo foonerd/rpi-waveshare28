@@ -62,7 +62,7 @@ Hairlines are 1 px in `dim`.
 | dock glyph | 22 | speaker is the signed-off 12×10 at 2× |
 | seek strip | 32 / 40 | portrait / landscape; whole strip is the hit |
 | seek chrome | top of strip | portrait face only — so the trough is not a second gap |
-| IP ring | ø18 | portrait: 2 px in from the top-right `(220, 2)` |
+| IP ring | ø18 | 2 px in from the top-right: portrait `(220, 2)`, landscape `(300, 2)` |
 | IP hit | 48×48 / 44×44 | A.1 / A.2; paint is not a 48 px slab |
 | surface pad x | 12 | |
 | field gap | 8 | metadata / status blocks |
