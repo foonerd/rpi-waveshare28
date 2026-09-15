@@ -86,15 +86,16 @@ impl Default for Strip {
     }
 }
 
-/// Named colour set. Tokens, not a CSS engine. `ink` is the shipped
-/// black / white / orange panel. `dusk` and `studio` must read at
-/// arm's length on RGB565. Live after `set`; no reboot.
+/// Named colour set. Tokens, not a CSS engine. ADR-0020 Sitting T:
+/// `ink` is the shipped panel; `dusk`, `studio` and `night` are the
+/// table words. Live after `set`; no reboot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
     Ink,
     Dusk,
     Studio,
+    Night,
 }
 
 impl Default for Theme {
@@ -396,6 +397,8 @@ mod tests {
         assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Studio);
         let f = write("theme = \"ink\"\n");
         assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Ink);
+        let f = write("theme = \"night\"\n");
+        assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Night);
     }
 
     #[test]

@@ -667,7 +667,7 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   if (stripLandscape !== 'progress' && stripLandscape !== 'stream' && stripLandscape !== 'off') {
     return { ok: false, message: 'That settings backup has an invalid strip_landscape.' };
   }
-  if (theme !== 'ink' && theme !== 'dusk' && theme !== 'studio') {
+  if (theme !== 'ink' && theme !== 'dusk' && theme !== 'studio' && theme !== 'night') {
     return { ok: false, message: 'That settings backup has an invalid theme.' };
   }
   return {

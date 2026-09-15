@@ -164,8 +164,8 @@ validate_strip() {
 
 validate_theme() {
     case "$1" in
-        ink|dusk|studio) ;;
-        *) die "theme must be ink, dusk or studio, got '$1'" ;;
+        ink|dusk|studio|night) ;;
+        *) die "theme must be ink, dusk, studio or night, got '$1'" ;;
     esac
 }
 
@@ -512,7 +512,7 @@ strip_portrait=${strip_portrait}
 strip_landscape=${strip_landscape}
 
 # Colour tokens. ink is the shipped black / white / orange panel.
-# dusk and studio are named swaps. Live after set; no reboot.
+# dusk, studio and night are ADR-0020 names. Live after set; no reboot.
 theme=${theme}
 EOF
     log "wrote ${CONF}"
@@ -1040,6 +1040,11 @@ apply_live() {
         cmd_apply
         return
     fi
+    # StartLimitBurst counts every start, including a healthy restart.
+    # A/B of live keys is five named sets in two minutes; without this
+    # the sixth set dies as "start attempted too often" while the unit
+    # never failed. Crash-loop braking stays on Restart=on-failure.
+    systemctl reset-failed "$UNIT" 2>/dev/null || true
     systemctl restart "$UNIT" || die "unit failed to restart; journalctl -u ${UNIT}"
     sleep 1
     systemctl is-active --quiet "$UNIT" || {

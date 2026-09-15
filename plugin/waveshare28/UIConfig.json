@@ -233,7 +233,8 @@
           "options": [
             { "value": "ink", "label": "TRANSLATE.THEME_INK" },
             { "value": "dusk", "label": "TRANSLATE.THEME_DUSK" },
-            { "value": "studio", "label": "TRANSLATE.THEME_STUDIO" }
+            { "value": "studio", "label": "TRANSLATE.THEME_STUDIO" },
+            { "value": "night", "label": "TRANSLATE.THEME_NIGHT" }
           ]
         }
       ]

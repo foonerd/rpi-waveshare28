@@ -129,6 +129,11 @@ A crash loop stops after five attempts in two minutes rather than restarting
 forever. `TimeoutStartSec` bounds the handover, which shells out to
 `dtoverlay` and `udevadm` and could in principle hang.
 
+A live `set` (theme, strip, bar-gap, status-text) is an operator
+restart, not a failure. `apply_live` runs `systemctl reset-failed`
+before `restart` so A/B cycling does not consume the burst. The
+burst still stops `Restart=on-failure` loops.
+
 The handover script additionally wraps each external call in `timeout 10`, so
 a hung `udevadm settle` cannot consume the whole start timeout.
 

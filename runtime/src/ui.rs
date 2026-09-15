@@ -178,8 +178,13 @@ pub struct Palette {
     pub danger: Rgb565,
 }
 
-const fn rgb(r: u8, g: u8, b: u8) -> Rgb565 {
-    Rgb565::new(r >> 3, g >> 2, b >> 3)
+/// ADR-0020 table word. The hex is the contract; do not re-derive with `>>`.
+const fn word(w: u16) -> Rgb565 {
+    Rgb565::new(
+        ((w >> 11) & 0x1f) as u8,
+        ((w >> 5) & 0x3f) as u8,
+        (w & 0x1f) as u8,
+    )
 }
 
 pub fn palette(theme: Theme) -> Palette {
@@ -192,23 +197,29 @@ pub fn palette(theme: Theme) -> Palette {
             accent: Rgb565::CSS_ORANGE,
             danger: Rgb565::CSS_RED,
         },
-        // RGB565 on this glass. Near-black and cream-on-white do not read.
-        // These steps are for arm's length, not sRGB taste.
         Theme::Dusk => Palette {
-            bg: rgb(80, 36, 12),
-            title: rgb(255, 220, 160),
-            meta: rgb(220, 168, 96),
-            dim: rgb(160, 96, 48),
-            accent: rgb(255, 200, 48),
-            danger: rgb(255, 72, 48),
+            bg: word(0x30C1),
+            title: word(0xFEB5),
+            meta: word(0xD52E),
+            dim: word(0x9B07),
+            accent: word(0xFD85),
+            danger: word(0xFA87),
         },
         Theme::Studio => Palette {
-            bg: rgb(12, 28, 72),
-            title: rgb(200, 220, 255),
-            meta: rgb(140, 168, 200),
-            dim: rgb(64, 88, 128),
-            accent: rgb(48, 160, 255),
-            danger: Rgb565::CSS_RED,
+            bg: word(0x08C7),
+            title: word(0xDF5F),
+            meta: word(0x959A),
+            dim: word(0x5352),
+            accent: word(0x3DBF),
+            danger: word(0xFA4A),
+        },
+        Theme::Night => Palette {
+            bg: word(0x1040),
+            title: word(0xFD89),
+            meta: word(0xCC67),
+            dim: word(0x7264),
+            accent: word(0xFF57),
+            danger: word(0xF944),
         },
     }
 }
@@ -1421,21 +1432,37 @@ mod tests {
     }
 
     #[test]
-    fn dusk_and_studio_are_named_swaps() {
+    fn adr0020_roster_paints_the_table_words() {
         let ink = palette(Theme::Ink);
         let dusk = palette(Theme::Dusk);
         let studio = palette(Theme::Studio);
+        let night = palette(Theme::Night);
+        assert_eq!(ink.bg, word(0x0000));
+        assert_eq!(ink.title, word(0xFFFF));
+        assert_eq!(ink.meta, word(0xD69A));
+        assert_eq!(ink.dim, word(0x6B4D));
+        assert_eq!(ink.accent, word(0xFD20));
+        assert_eq!(ink.danger, word(0xF800));
+        assert_eq!(dusk.bg, word(0x30C1));
+        assert_eq!(dusk.title, word(0xFEB5));
+        assert_eq!(dusk.meta, word(0xD52E));
+        assert_eq!(dusk.dim, word(0x9B07));
+        assert_eq!(dusk.accent, word(0xFD85));
+        assert_eq!(dusk.danger, word(0xFA87));
+        assert_eq!(studio.bg, word(0x08C7));
+        assert_eq!(studio.title, word(0xDF5F));
+        assert_eq!(studio.meta, word(0x959A));
+        assert_eq!(studio.dim, word(0x5352));
+        assert_eq!(studio.accent, word(0x3DBF));
+        assert_eq!(studio.danger, word(0xFA4A));
+        assert_eq!(night.bg, word(0x1040));
+        assert_eq!(night.title, word(0xFD89));
+        assert_eq!(night.meta, word(0xCC67));
+        assert_eq!(night.dim, word(0x7264));
+        assert_eq!(night.accent, word(0xFF57));
+        assert_eq!(night.danger, word(0xF944));
         assert_ne!(dusk.bg, ink.bg);
-        assert_ne!(dusk.title, ink.title);
-        assert_ne!(dusk.accent, ink.accent);
-        assert_ne!(studio.bg, ink.bg);
-        assert_ne!(studio.title, ink.title);
-        assert_ne!(studio.accent, ink.accent);
+        assert_ne!(night.bg, ink.bg);
         assert_ne!(dusk.accent, studio.accent);
-        assert_ne!(dusk.bg, studio.bg);
-        assert_eq!(dusk.bg, rgb(80, 36, 12));
-        assert_eq!(dusk.accent, rgb(255, 200, 48));
-        assert_eq!(studio.bg, rgb(12, 28, 72));
-        assert_eq!(studio.accent, rgb(48, 160, 255));
     }
 }

@@ -359,26 +359,32 @@ Transport, title and artist do not move.
 
 ### `theme`
 
-`ink`, `dusk` or `studio`. Colour tokens for the panel. Not a CSS
-engine: each name is a fixed RGB565 set.
+`ink`, `dusk`, `studio` or `night`. Colour tokens for the panel.
+Not a CSS engine: each name is a fixed RGB565 set (ADR-0020 table
+words).
 
 `ink` (default) is the shipped black ground, white title, light-gray
 meta, dim-gray trough, orange volume fill, red mute.
 
-`dusk` is brown ground, cream type, amber volume.
+`dusk` is dark roast: brown ground, cream type, amber volume.
 
-`studio` is navy ground, ice type, blue volume.
+`studio` is deep navy, ice type, blue volume.
+
+`night` is amber type on a near-black ground; volume fill is pale
+cream. Do not brighten its ground.
 
 Cover art does not recolour. The tokens show on the ground around
 the text and bars, the title and artist, the clocks, the transport
 labels, and the volume fill. The bar that changes colour is volume
 (accent). Progress fill follows the title colour. A cover tap (the
-address overlay) is the loudest view of the ground.
+address overlay) is the loudest view of the ground. Geometry, strip
+occupancy, fonts and cover-tap do not move.
 
 A theme-only `set` is live: toml and unit restart, no overlay
 rewrite, no reboot. Geometry, strip occupancy and fonts do not move.
 
     sudo waveshare28-config set theme=dusk
+    sudo waveshare28-config set theme=night
 
 ---
 
@@ -531,7 +537,7 @@ Larger status text, more space between the slider and the progress
 bar, and stream IN on a landscape mount:
 
     sudo waveshare28-config set status_text_landscape=large bar_gap_landscape=roomy strip_landscape=stream
-    sudo waveshare28-config set theme=dusk
+    sudo waveshare28-config set theme=night
 
 After a kernel OTA that has dropped `fbcon=`:
 
