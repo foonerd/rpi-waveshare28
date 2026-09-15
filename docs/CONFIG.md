@@ -565,8 +565,8 @@ that `detect` says apply:
 
 | Control | Who sees it |
 |---|---|
-| rotation, speed, backend | all supported Pi |
-| status text, bar spacing, track strip | all supported Pi; one pair per orientation |
+| rotation, speed, backend | Panel section; all supported Pi |
+| theme, status text, bar spacing, track strip | UI section; all supported Pi; type and strip are one pair per orientation |
 | console | `backend=framebuffer` |
 | hdmi | Pi 4 family and `backend=framebuffer` |
 | 3A+ KMS | read-only status on 3A+ only |
@@ -582,9 +582,9 @@ a factory reset or a re-apply of the same framebuffer keys:
 would only toast "Settings applied." Enable (`onStart`) runs `apply`
 and offers a reboot only when `reboot_required` is true (framebuffer
 overlay not live). Default `backend=spi` does not reboot. `console=`
-only rewrites the unit. Status text, bar spacing and track strip rewrite the toml
-and restart the unit; they do not rewrite boot overlays and they do
-not reboot. Disabling the plugin calls
+only rewrites the unit. Theme, status text, bar spacing and track strip
+(the UI section) rewrite the toml and restart the unit; they do not
+rewrite boot overlays and they do not reboot. Disabling the plugin calls
 `recover` and keeps `/boot/waveshare28.conf`.
 
 Named settings backups (Soloist-style) live in

@@ -11,7 +11,8 @@ words are ADR-0020. Numbers below are what the renderer paints.
 ## Themes
 
 `theme=ink|dusk|studio|night`. Live key: toml + unit restart. Not a CSS
-engine. Each name is a fixed six-token set.
+engine. Each name is a fixed six-token set. The Volumio plugin keeps
+these keys on a **UI** section, separate from Panel (rotation, bus).
 
 | token | paints |
 |---|---|

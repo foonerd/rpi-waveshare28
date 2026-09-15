@@ -49,21 +49,14 @@
         "endpoint": "system_controller/waveshare28",
         "method": "saveSettings"
       },
-          "saveButton": {
+      "saveButton": {
         "label": "TRANSLATE.SAVE",
         "data": [
           "rotation",
           "speed",
           "backend",
           "console",
-          "hdmi",
-          "status_text_portrait",
-          "status_text_landscape",
-          "bar_gap_portrait",
-          "bar_gap_landscape",
-          "strip_portrait",
-          "strip_landscape",
-          "theme"
+          "hdmi"
         ]
       },
       "content": [
@@ -132,6 +125,48 @@
             "field": "backend",
             "value": "framebuffer"
           }
+        }
+      ]
+    },
+    {
+      "id": "section_ui",
+      "element": "section",
+      "label": "TRANSLATE.SECTION_UI",
+      "icon": "fa-paint-brush",
+      "description": "TRANSLATE.SECTION_UI_DESC",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "system_controller/waveshare28",
+        "method": "saveSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE",
+        "data": [
+          "theme",
+          "status_text_portrait",
+          "status_text_landscape",
+          "bar_gap_portrait",
+          "bar_gap_landscape",
+          "strip_portrait",
+          "strip_landscape"
+        ]
+      },
+      "content": [
+        {
+          "id": "theme",
+          "element": "select",
+          "label": "TRANSLATE.THEME",
+          "doc": "TRANSLATE.THEME_DOC",
+          "value": {
+            "value": "ink",
+            "label": "TRANSLATE.THEME_INK"
+          },
+          "options": [
+            { "value": "ink", "label": "TRANSLATE.THEME_INK" },
+            { "value": "dusk", "label": "TRANSLATE.THEME_DUSK" },
+            { "value": "studio", "label": "TRANSLATE.THEME_STUDIO" },
+            { "value": "night", "label": "TRANSLATE.THEME_NIGHT" }
+          ]
         },
         {
           "id": "status_text_portrait",
@@ -219,22 +254,6 @@
             { "value": "progress", "label": "TRANSLATE.STRIP_PROGRESS" },
             { "value": "stream", "label": "TRANSLATE.STRIP_STREAM" },
             { "value": "off", "label": "TRANSLATE.STRIP_OFF" }
-          ]
-        },
-        {
-          "id": "theme",
-          "element": "select",
-          "label": "TRANSLATE.THEME",
-          "doc": "TRANSLATE.THEME_DOC",
-          "value": {
-            "value": "ink",
-            "label": "TRANSLATE.THEME_INK"
-          },
-          "options": [
-            { "value": "ink", "label": "TRANSLATE.THEME_INK" },
-            { "value": "dusk", "label": "TRANSLATE.THEME_DUSK" },
-            { "value": "studio", "label": "TRANSLATE.THEME_STUDIO" },
-            { "value": "night", "label": "TRANSLATE.THEME_NIGHT" }
           ]
         }
       ]

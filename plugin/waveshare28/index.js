@@ -126,6 +126,12 @@ function setSelect(item, value) {
   item.value = match || { value: value, label: String(value) };
 }
 
+function findSection(uiconf, id) {
+  return (uiconf.sections || []).find(function (s) {
+    return s.id === id;
+  });
+}
+
 function setField(section, id, fn) {
   const item = section.content.find(function (c) {
     return c.id === id;
@@ -238,8 +244,9 @@ Waveshare28.prototype.getUIConfig = function () {
 
       const board = state.board || self.board || {};
       const params = board.params || {};
-      const status = uiconf.sections[0];
-      const settings = uiconf.sections[1];
+      const status = findSection(uiconf, 'section_status');
+      const settings = findSection(uiconf, 'section_settings');
+      const ui = findSection(uiconf, 'section_ui');
 
       setField(status, 'board_family', function (item) {
         item.value = (board.family || '') + (board.revision ? ' (' + board.revision + ')' : '');
@@ -278,25 +285,25 @@ Waveshare28.prototype.getUIConfig = function () {
       setField(settings, 'hdmi', function (item) {
         item.value = state.hdmi === 'on';
       });
-      setField(settings, 'status_text_portrait', function (item) {
+      setField(ui, 'status_text_portrait', function (item) {
         setSelect(item, state.status_text_portrait || 'normal');
       });
-      setField(settings, 'status_text_landscape', function (item) {
+      setField(ui, 'status_text_landscape', function (item) {
         setSelect(item, state.status_text_landscape || 'normal');
       });
-      setField(settings, 'bar_gap_portrait', function (item) {
+      setField(ui, 'bar_gap_portrait', function (item) {
         setSelect(item, state.bar_gap_portrait || 'default');
       });
-      setField(settings, 'bar_gap_landscape', function (item) {
+      setField(ui, 'bar_gap_landscape', function (item) {
         setSelect(item, state.bar_gap_landscape || 'default');
       });
-      setField(settings, 'strip_portrait', function (item) {
+      setField(ui, 'strip_portrait', function (item) {
         setSelect(item, state.strip_portrait || 'progress');
       });
-      setField(settings, 'strip_landscape', function (item) {
+      setField(ui, 'strip_landscape', function (item) {
         setSelect(item, state.strip_landscape || 'progress');
       });
-      setField(settings, 'theme', function (item) {
+      setField(ui, 'theme', function (item) {
         setSelect(item, state.theme || 'ink');
       });
 
