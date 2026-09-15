@@ -24,7 +24,8 @@ const SETTINGS_BACKUP_KEYS = [
   'bar_gap_portrait',
   'bar_gap_landscape',
   'strip_portrait',
-  'strip_landscape'
+  'strip_landscape',
+  'theme'
 ];
 const PLUGIN_VERSION = require('./package.json').version;
 
@@ -295,6 +296,9 @@ Waveshare28.prototype.getUIConfig = function () {
       setField(settings, 'strip_landscape', function (item) {
         setSelect(item, state.strip_landscape || 'progress');
       });
+      setField(settings, 'theme', function (item) {
+        setSelect(item, state.theme || 'ink');
+      });
 
       if (!params.hdmi) {
         removeFields(settings, ['hdmi']);
@@ -361,6 +365,7 @@ Waveshare28.prototype.saveSettings = function (data) {
     const barGapLandscape = fieldValue(data, 'bar_gap_landscape');
     const stripPortrait = fieldValue(data, 'strip_portrait');
     const stripLandscape = fieldValue(data, 'strip_landscape');
+    const theme = fieldValue(data, 'theme');
     if (statusPortrait !== undefined) {
       args.push('status_text_portrait=' + statusPortrait);
     }
@@ -378,6 +383,9 @@ Waveshare28.prototype.saveSettings = function (data) {
     }
     if (stripLandscape !== undefined) {
       args.push('strip_landscape=' + stripLandscape);
+    }
+    if (theme !== undefined) {
+      args.push('theme=' + theme);
     }
     if (args.length === 0) {
       defer.resolve();
@@ -638,6 +646,9 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   const stripLandscape = values.strip_landscape == null || values.strip_landscape === ''
     ? 'progress'
     : values.strip_landscape;
+  const theme = values.theme == null || values.theme === ''
+    ? 'ink'
+    : values.theme;
   if (statusPortrait !== 'normal' && statusPortrait !== 'large') {
     return { ok: false, message: 'That settings backup has an invalid status_text_portrait.' };
   }
@@ -656,6 +667,9 @@ Waveshare28.prototype.validateBackupValues = function (values) {
   if (stripLandscape !== 'progress' && stripLandscape !== 'stream' && stripLandscape !== 'off') {
     return { ok: false, message: 'That settings backup has an invalid strip_landscape.' };
   }
+  if (theme !== 'ink' && theme !== 'dusk' && theme !== 'studio') {
+    return { ok: false, message: 'That settings backup has an invalid theme.' };
+  }
   return {
     ok: true,
     values: {
@@ -669,7 +683,8 @@ Waveshare28.prototype.validateBackupValues = function (values) {
       bar_gap_portrait: barGapPortrait,
       bar_gap_landscape: barGapLandscape,
       strip_portrait: stripPortrait,
-      strip_landscape: stripLandscape
+      strip_landscape: stripLandscape,
+      theme: theme
     }
   };
 };
@@ -776,7 +791,8 @@ Waveshare28.prototype.restoreSettingsBackup = function (data) {
       'bar_gap_portrait=' + v.bar_gap_portrait,
       'bar_gap_landscape=' + v.bar_gap_landscape,
       'strip_portrait=' + v.strip_portrait,
-      'strip_landscape=' + v.strip_landscape
+      'strip_landscape=' + v.strip_landscape,
+      'theme=' + v.theme
     ];
     if (v.backend === 'framebuffer') {
       args.push('console=' + v.console);

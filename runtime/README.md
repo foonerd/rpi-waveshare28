@@ -54,7 +54,8 @@ title, artist and album, a volume slider with a speaker mark, a
 volume-to-transport slot and a transport strip. The slot defaults to
 elapsed / bar / total when `getState` publishes a duration; it can
 instead show IN stream fields or stay blank (`strip_portrait` /
-`strip_landscape`). A tap on the
+`strip_landscape`). Colours come from a named theme (`theme`; default
+`ink`). A tap on the
 cover shows the address screen for ten seconds, or until the next tap. A failed poll during a Volumio restart is transient,
 and reverting to an address list mid-listening would be worse than a
 slightly stale player.

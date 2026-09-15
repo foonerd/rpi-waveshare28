@@ -21,7 +21,7 @@ use embedded_graphics::{
 };
 
 use crate::art::Art;
-use crate::config::{BarGap, Config, StatusText, Strip};
+use crate::config::{BarGap, Config, StatusText, Strip, Theme};
 use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::touch::Touch;
@@ -163,6 +163,54 @@ pub struct Layout {
     pub status_text: StatusText,
     /// What occupies the volume-to-transport slot.
     pub strip: Strip,
+    /// Colour tokens for this paint.
+    pub theme: Theme,
+}
+
+/// Named colours for one theme. Ink matches the shipped CSS constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub bg: Rgb565,
+    pub title: Rgb565,
+    pub meta: Rgb565,
+    pub dim: Rgb565,
+    pub accent: Rgb565,
+    pub danger: Rgb565,
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> Rgb565 {
+    Rgb565::new(r >> 3, g >> 2, b >> 3)
+}
+
+pub fn palette(theme: Theme) -> Palette {
+    match theme {
+        Theme::Ink => Palette {
+            bg: Rgb565::BLACK,
+            title: Rgb565::WHITE,
+            meta: Rgb565::CSS_LIGHT_GRAY,
+            dim: Rgb565::CSS_DIM_GRAY,
+            accent: Rgb565::CSS_ORANGE,
+            danger: Rgb565::CSS_RED,
+        },
+        // RGB565 on this glass. Near-black and cream-on-white do not read.
+        // These steps are for arm's length, not sRGB taste.
+        Theme::Dusk => Palette {
+            bg: rgb(80, 36, 12),
+            title: rgb(255, 220, 160),
+            meta: rgb(220, 168, 96),
+            dim: rgb(160, 96, 48),
+            accent: rgb(255, 200, 48),
+            danger: rgb(255, 72, 48),
+        },
+        Theme::Studio => Palette {
+            bg: rgb(12, 28, 72),
+            title: rgb(200, 220, 255),
+            meta: rgb(140, 168, 200),
+            dim: rgb(64, 88, 128),
+            accent: rgb(48, 160, 255),
+            danger: Rgb565::CSS_RED,
+        },
+    }
 }
 
 fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
@@ -170,6 +218,10 @@ fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
 }
 
 impl Layout {
+    fn pal(&self) -> Palette {
+        palette(self.theme)
+    }
+
     /// Layout for a rotation in degrees. 0 and 180 are portrait, 90 and 270
     /// landscape. Default gap and status type; the missing-file path goes
     /// through [`Config::default`] and [`Self::from_config`].
@@ -180,18 +232,31 @@ impl Layout {
             BarGap::Default,
             StatusText::Normal,
             Strip::Progress,
+            Theme::Ink,
         )
     }
 
     /// Layout for the configured rotation, gap, status type and strip.
     pub fn from_config(cfg: &Config) -> Self {
-        Self::compose(cfg.rotation, cfg.bar_gap(), cfg.status_text(), cfg.strip())
+        Self::compose(
+            cfg.rotation,
+            cfg.bar_gap(),
+            cfg.status_text(),
+            cfg.strip(),
+            cfg.theme,
+        )
     }
 
-    fn compose(rotation: u16, gap: BarGap, status_text: StatusText, strip: Strip) -> Self {
+    fn compose(
+        rotation: u16,
+        gap: BarGap,
+        status_text: StatusText,
+        strip: Strip,
+        theme: Theme,
+    ) -> Self {
         match rotation {
-            90 | 270 => Self::landscape(rotation, gap, status_text, strip),
-            _ => Self::portrait(rotation, gap, status_text, strip),
+            90 | 270 => Self::landscape(rotation, gap, status_text, strip, theme),
+            _ => Self::portrait(rotation, gap, status_text, strip, theme),
         }
     }
 
@@ -199,7 +264,13 @@ impl Layout {
     ///
     /// Transport stays at y 292. Extra bar gap moves the slider up; roomy
     /// also shortens the art box by 4 px so the text block still fits.
-    fn portrait(rotation: u16, gap: BarGap, status_text: StatusText, strip: Strip) -> Self {
+    fn portrait(
+        rotation: u16,
+        gap: BarGap,
+        status_text: StatusText,
+        strip: Strip,
+        theme: Theme,
+    ) -> Self {
         let (art_h, text_y, vol_y, prog_y) = match gap {
             BarGap::Tight => (200, 214, 270, 280),
             BarGap::Default => (200, 214, 268, 280),
@@ -219,6 +290,7 @@ impl Layout {
             transport: rect(0, 292, 240, 28),
             status_text,
             strip,
+            theme,
         }
     }
 
@@ -238,7 +310,13 @@ impl Layout {
     /// The cost is album art at 168 rather than 200. It is still by far the
     /// largest element, and a slider that cannot be landed on is a worse
     /// daily annoyance than 32 pixels of cover.
-    fn landscape(rotation: u16, gap: BarGap, status_text: StatusText, strip: Strip) -> Self {
+    fn landscape(
+        rotation: u16,
+        gap: BarGap,
+        status_text: StatusText,
+        strip: Strip,
+        theme: Theme,
+    ) -> Self {
         // Transport is pinned at y 200, height 40. Roomy steals 12 px from
         // the art box; tight and default keep the 168 cover.
         let (art_s, vol_y, prog_y) = match gap {
@@ -260,6 +338,7 @@ impl Layout {
             transport: rect(0, 200, 320, 40),
             status_text,
             strip,
+            theme,
         }
     }
 
@@ -529,9 +608,9 @@ struct RowBuf {
 }
 
 impl RowBuf {
-    fn new(size: Size) -> Self {
+    fn new(size: Size, bg: Rgb565) -> Self {
         Self {
-            px: vec![Rgb565::BLACK; (size.width * size.height) as usize],
+            px: vec![bg; (size.width * size.height) as usize],
             size,
         }
     }
@@ -568,11 +647,16 @@ impl DrawTarget for RowBuf {
 /// rather than as a deliberate scroll.
 ///
 /// Composed in memory and blitted in one write. See [`RowBuf`] for why.
-fn draw_text<D>(target: &mut D, region: Rectangle, pane: &TextPane) -> Result<(), D::Error>
+fn draw_text<D>(
+    target: &mut D,
+    region: Rectangle,
+    pane: &TextPane,
+    pal: Palette,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let mut buf = RowBuf::new(region.size);
+    let mut buf = RowBuf::new(region.size, pal.bg);
 
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Top)
@@ -589,9 +673,9 @@ where
     };
 
     let fields: [(&Vec<String>, &MonoFont, Rgb565); 3] = [
-        (&pane.title, TITLE_FONT, Rgb565::WHITE),
-        (&pane.artist, META_FONT, Rgb565::CSS_LIGHT_GRAY),
-        (&pane.album, META_FONT, Rgb565::CSS_DIM_GRAY),
+        (&pane.title, TITLE_FONT, pal.title),
+        (&pane.artist, META_FONT, pal.meta),
+        (&pane.album, META_FONT, pal.dim),
     ];
 
     let mut first = true;
@@ -644,8 +728,9 @@ pub fn draw_status<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    let pal = layout.pal();
     let region = layout.frame;
-    let mut buf = RowBuf::new(region.size);
+    let mut buf = RowBuf::new(region.size, pal.bg);
 
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Top)
@@ -655,10 +740,10 @@ where
 
     let (title_font, fact_font) = status_fonts(layout.status_text);
     let width = region.size.width;
-    let title = MonoTextStyle::new(title_font, Rgb565::WHITE);
-    let section = MonoTextStyle::new(title_font, Rgb565::CSS_LIGHT_GRAY);
-    let fact = MonoTextStyle::new(fact_font, Rgb565::CSS_LIGHT_GRAY);
-    let status = MonoTextStyle::new(title_font, Rgb565::CSS_DIM_GRAY);
+    let title = MonoTextStyle::new(title_font, pal.title);
+    let section = MonoTextStyle::new(title_font, pal.meta);
+    let fact = MonoTextStyle::new(fact_font, pal.meta);
+    let status = MonoTextStyle::new(title_font, pal.dim);
 
     // Hostname first so a long name wraps like an address, then the body.
     // Build the lines first so the block height is known and it can be
@@ -769,10 +854,10 @@ pub fn draw<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    target.clear(Rgb565::BLACK)?;
+    target.clear(layout.pal().bg)?;
 
     draw_art(target, layout, art)?;
-    draw_text(target, layout.text, pane)?;
+    draw_text(target, layout.text, pane, layout.pal())?;
 
     draw_volume(target, layout, state)?;
     draw_progress(target, layout, state)?;
@@ -790,6 +875,7 @@ pub fn draw_art<D>(target: &mut D, layout: &Layout, art: Option<&Art>) -> Result
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    let pal = layout.pal();
     let box_ = layout.art;
 
     if let Some(art) = art {
@@ -800,23 +886,23 @@ where
         let placed = Rectangle::new(Point::new(x, y), Size::new(w, h));
 
         if placed != box_ {
-            box_.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+            box_.into_styled(PrimitiveStyle::with_fill(pal.bg))
                 .draw(target)?;
         }
 
         target.fill_contiguous(&placed, art.px.iter().copied())?;
     } else {
-        box_.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        box_.into_styled(PrimitiveStyle::with_fill(pal.bg))
             .draw(target)?;
     }
 
     // Affordance: the whole art box opens the address overlay. A chip so
     // that is findable on a cover that would otherwise hide it.
-    draw_info_mark(target, box_)
+    draw_info_mark(target, box_, pal)
 }
 
 /// Small `i` in the art-box corner. The hit target is the whole box.
-fn draw_info_mark<D>(target: &mut D, box_: Rectangle) -> Result<(), D::Error>
+fn draw_info_mark<D>(target: &mut D, box_: Rectangle, pal: Palette) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -828,10 +914,10 @@ where
         ),
         Size::new(CHIP, CHIP),
     );
-    chip.into_styled(PrimitiveStyle::with_fill(Rgb565::CSS_DIM_GRAY))
+    chip.into_styled(PrimitiveStyle::with_fill(pal.dim))
         .draw(target)?;
 
-    let style = MonoTextStyle::new(META_FONT, Rgb565::WHITE);
+    let style = MonoTextStyle::new(META_FONT, pal.title);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
@@ -851,7 +937,7 @@ pub fn draw_rows<D>(target: &mut D, layout: &Layout, pane: &TextPane) -> Result<
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    draw_text(target, layout.text, pane)
+    draw_text(target, layout.text, pane, layout.pal())
 }
 
 /// Repaint the volume-to-transport slot.
@@ -867,36 +953,42 @@ pub fn draw_progress<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    let pal = layout.pal();
     match layout.strip {
-        Strip::Off => blank_strip(target, layout.progress),
-        Strip::Stream => draw_stream_info(target, layout.progress, state),
-        Strip::Progress => draw_progress_times(target, layout.progress, state),
+        Strip::Off => blank_strip(target, layout.progress, pal),
+        Strip::Stream => draw_stream_info(target, layout.progress, state, pal),
+        Strip::Progress => draw_progress_times(target, layout.progress, state, pal),
     }
 }
 
-fn blank_strip<D>(target: &mut D, bar: Rectangle) -> Result<(), D::Error>
+fn blank_strip<D>(target: &mut D, bar: Rectangle, pal: Palette) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    bar.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+    bar.into_styled(PrimitiveStyle::with_fill(pal.bg))
         .draw(target)
 }
 
 /// One centred line of IN format. Too long is clipped, not wrapped: the
 /// slot is one face tall.
-fn draw_stream_info<D>(target: &mut D, bar: Rectangle, state: &PlayerState) -> Result<(), D::Error>
+fn draw_stream_info<D>(
+    target: &mut D,
+    bar: Rectangle,
+    state: &PlayerState,
+    pal: Palette,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
     let Some(text) = state.stream_info() else {
-        return blank_strip(target, bar);
+        return blank_strip(target, bar, pal);
     };
 
     let cols = (bar.size.width / META_FONT.character_size.width).max(1) as usize;
     let shown: String = text.chars().take(cols).collect();
 
-    let mut buf = RowBuf::new(bar.size);
-    let style = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
+    let mut buf = RowBuf::new(bar.size, pal.bg);
+    let style = MonoTextStyle::new(META_FONT, pal.meta);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
@@ -931,12 +1023,13 @@ fn draw_progress_times<D>(
     target: &mut D,
     slot: Rectangle,
     state: &PlayerState,
+    pal: Palette,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
     let Some(frac) = state.progress() else {
-        return blank_strip(target, slot);
+        return blank_strip(target, slot, pal);
     };
     let elapsed = state.seek.unwrap_or(0) / 1000;
     let total = state.duration.unwrap_or(0);
@@ -949,8 +1042,8 @@ where
     let bar_h = 6u32.min(slot.size.height);
     let bar_y = (slot.size.height.saturating_sub(bar_h)) / 2;
 
-    let mut buf = RowBuf::new(slot.size);
-    let style = MonoTextStyle::new(META_FONT, Rgb565::CSS_LIGHT_GRAY);
+    let mut buf = RowBuf::new(slot.size, pal.bg);
+    let style = MonoTextStyle::new(META_FONT, pal.meta);
     let left_align = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Left)
@@ -974,7 +1067,7 @@ where
             Point::new((side + gap) as i32, bar_y as i32),
             Size::new(inner_w, bar_h),
         );
-        let _ = fill_bar(&mut buf, track, frac, Rgb565::CSS_DIM_GRAY, Rgb565::WHITE);
+        let _ = fill_bar(&mut buf, track, frac, pal.dim, pal.title);
     }
     target.fill_contiguous(&slot, buf.px.iter().copied())
 }
@@ -984,13 +1077,14 @@ pub fn draw_volume<D>(target: &mut D, layout: &Layout, state: &PlayerState) -> R
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    let pal = layout.pal();
     let slot = layout.volume;
-    slot.into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+    slot.into_styled(PrimitiveStyle::with_fill(pal.bg))
         .draw(target)?;
 
     let muted = state.is_muted();
     let volume = state.volume.unwrap_or(0);
-    draw_speaker(target, slot, muted || volume == 0)?;
+    draw_speaker(target, slot, muted || volume == 0, pal)?;
 
     let frac = if muted {
         0.0
@@ -998,21 +1092,15 @@ where
         f32::from(volume) / 100.0
     };
 
-    fill_bar(
-        target,
-        volume_track(slot),
-        frac,
-        Rgb565::CSS_DIM_GRAY,
-        Rgb565::CSS_ORANGE,
-    )
+    fill_bar(target, volume_track(slot), frac, pal.dim, pal.accent)
 }
 
-/// White cabinet/cone/waves with level; red cabinet/cone/cross when silent.
-fn speaker_colour(muted: bool, volume: u8) -> Rgb565 {
+/// Title-colour cabinet/cone/waves with level; danger cabinet/cone/cross when silent.
+fn speaker_colour(muted: bool, volume: u8, pal: Palette) -> Rgb565 {
     if muted || volume == 0 {
-        Rgb565::CSS_RED
+        pal.danger
     } else {
-        Rgb565::WHITE
+        pal.title
     }
 }
 
@@ -1035,17 +1123,22 @@ where
     Ok(())
 }
 
-fn draw_speaker<D>(target: &mut D, slot: Rectangle, silent: bool) -> Result<(), D::Error>
+fn draw_speaker<D>(
+    target: &mut D,
+    slot: Rectangle,
+    silent: bool,
+    pal: Palette,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let colour = speaker_colour(silent, if silent { 0 } else { 1 });
+    let colour = speaker_colour(silent, if silent { 0 } else { 1 }, pal);
     let origin = Point::new(
         slot.top_left.x,
         slot.top_left.y + (slot.size.height as i32 - VOL_ICON_H as i32) / 2,
     );
     Rectangle::new(origin, Size::new(VOL_ICON_W, VOL_ICON_H))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .into_styled(PrimitiveStyle::with_fill(pal.bg))
         .draw(target)?;
     plot_icon_px(target, origin, SPEAKER_BODY, colour)?;
     if silent {
@@ -1065,12 +1158,13 @@ pub fn draw_transport<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    let pal = layout.pal();
     let strip = layout.transport;
     strip
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .into_styled(PrimitiveStyle::with_fill(pal.bg))
         .draw(target)?;
 
-    let style = MonoTextStyle::new(TITLE_FONT, Rgb565::WHITE);
+    let style = MonoTextStyle::new(TITLE_FONT, pal.title);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
@@ -1135,6 +1229,7 @@ mod tests {
         assert_eq!(origin(l.transport), (0, 292, 240, 28));
         assert_eq!(l.status_text, StatusText::Normal);
         assert_eq!(l.strip, Strip::Progress);
+        assert_eq!(l.theme, Theme::Ink);
     }
 
     #[test]
@@ -1149,12 +1244,24 @@ mod tests {
 
     #[test]
     fn tight_keeps_art_and_closes_the_bar_gap() {
-        let p = Layout::compose(0, BarGap::Tight, StatusText::Normal, Strip::Progress);
+        let p = Layout::compose(
+            0,
+            BarGap::Tight,
+            StatusText::Normal,
+            Strip::Progress,
+            Theme::Ink,
+        );
         assert_eq!(origin(p.art), (20, 8, 200, 200));
         assert_eq!(origin(p.volume), (10, 270, 220, 6));
         assert_eq!(origin(p.progress), (10, 276, 220, 12));
         assert_eq!(origin(p.transport), (0, 292, 240, 28));
-        let l = Layout::compose(90, BarGap::Tight, StatusText::Normal, Strip::Progress);
+        let l = Layout::compose(
+            90,
+            BarGap::Tight,
+            StatusText::Normal,
+            Strip::Progress,
+            Theme::Ink,
+        );
         assert_eq!(origin(l.art), (10, 4, 168, 168));
         assert_eq!(origin(l.volume), (10, 178, 300, 6));
         assert_eq!(origin(l.progress), (10, 184, 300, 12));
@@ -1165,9 +1272,9 @@ mod tests {
     fn transport_does_not_move_when_the_gap_opens() {
         for gap in [BarGap::Tight, BarGap::Default, BarGap::Roomy] {
             for strip in [Strip::Progress, Strip::Stream, Strip::Off] {
-                let p = Layout::compose(0, gap, StatusText::Normal, strip);
+                let p = Layout::compose(0, gap, StatusText::Normal, strip, Theme::Ink);
                 assert_eq!(origin(p.transport), (0, 292, 240, 28));
-                let l = Layout::compose(90, gap, StatusText::Normal, strip);
+                let l = Layout::compose(90, gap, StatusText::Normal, strip, Theme::Ink);
                 assert_eq!(origin(l.transport), (0, 200, 320, 40));
             }
         }
@@ -1175,7 +1282,13 @@ mod tests {
 
     #[test]
     fn roomy_portrait_opens_the_bar_gap_from_art() {
-        let l = Layout::compose(0, BarGap::Roomy, StatusText::Normal, Strip::Progress);
+        let l = Layout::compose(
+            0,
+            BarGap::Roomy,
+            StatusText::Normal,
+            Strip::Progress,
+            Theme::Ink,
+        );
         assert_eq!(origin(l.volume), (10, 260, 220, 6));
         assert_eq!(origin(l.progress), (10, 276, 220, 12));
         assert_eq!(l.art.size.height, 196);
@@ -1185,7 +1298,13 @@ mod tests {
 
     #[test]
     fn roomy_landscape_steals_from_art_not_transport() {
-        let l = Layout::compose(90, BarGap::Roomy, StatusText::Normal, Strip::Progress);
+        let l = Layout::compose(
+            90,
+            BarGap::Roomy,
+            StatusText::Normal,
+            Strip::Progress,
+            Theme::Ink,
+        );
         assert_eq!(origin(l.art), (10, 4, 156, 156));
         assert_eq!(origin(l.volume), (10, 168, 300, 6));
         assert_eq!(origin(l.progress), (10, 184, 300, 12));
@@ -1213,23 +1332,37 @@ mod tests {
             bar_gap_portrait: BarGap::Tight,
             strip_landscape: Strip::Stream,
             strip_portrait: Strip::Off,
+            theme: Theme::Studio,
             ..Config::default()
         };
         let l = Layout::from_config(&cfg);
         assert_eq!(l.status_text, StatusText::Large);
         assert_eq!(l.art.size.width, 156);
         assert_eq!(l.strip, Strip::Stream);
+        assert_eq!(l.theme, Theme::Studio);
         assert_eq!(origin(l.progress), (10, 184, 300, 12));
     }
 
     #[test]
     fn stream_grows_the_slot_without_moving_neighbours() {
-        let p = Layout::compose(0, BarGap::Default, StatusText::Normal, Strip::Stream);
+        let p = Layout::compose(
+            0,
+            BarGap::Default,
+            StatusText::Normal,
+            Strip::Stream,
+            Theme::Ink,
+        );
         assert_eq!(origin(p.art), (20, 8, 200, 200));
         assert_eq!(origin(p.volume), (10, 268, 220, 6));
         assert_eq!(origin(p.progress), (10, 276, 220, 12));
         assert_eq!(origin(p.transport), (0, 292, 240, 28));
-        let l = Layout::compose(90, BarGap::Default, StatusText::Normal, Strip::Stream);
+        let l = Layout::compose(
+            90,
+            BarGap::Default,
+            StatusText::Normal,
+            Strip::Stream,
+            Theme::Ink,
+        );
         assert_eq!(origin(l.art), (10, 4, 168, 168));
         assert_eq!(origin(l.volume), (10, 178, 300, 6));
         assert_eq!(origin(l.progress), (10, 186, 300, 12));
@@ -1238,7 +1371,13 @@ mod tests {
 
     #[test]
     fn off_keeps_the_progress_rect() {
-        let p = Layout::compose(0, BarGap::Default, StatusText::Normal, Strip::Off);
+        let p = Layout::compose(
+            0,
+            BarGap::Default,
+            StatusText::Normal,
+            Strip::Off,
+            Theme::Ink,
+        );
         assert_eq!(origin(p.progress), (10, 280, 220, 4));
         assert_eq!(origin(p.transport), (0, 292, 240, 28));
     }
@@ -1263,9 +1402,40 @@ mod tests {
 
     #[test]
     fn speaker_is_red_when_silent() {
-        assert_eq!(speaker_colour(false, 48), Rgb565::WHITE);
-        assert_eq!(speaker_colour(true, 48), Rgb565::CSS_RED);
-        assert_eq!(speaker_colour(false, 0), Rgb565::CSS_RED);
-        assert_eq!(speaker_colour(true, 0), Rgb565::CSS_RED);
+        let ink = palette(Theme::Ink);
+        assert_eq!(speaker_colour(false, 48, ink), Rgb565::WHITE);
+        assert_eq!(speaker_colour(true, 48, ink), Rgb565::CSS_RED);
+        assert_eq!(speaker_colour(false, 0, ink), Rgb565::CSS_RED);
+        assert_eq!(speaker_colour(true, 0, ink), Rgb565::CSS_RED);
+    }
+
+    #[test]
+    fn ink_matches_the_shipped_css() {
+        let ink = palette(Theme::Ink);
+        assert_eq!(ink.bg, Rgb565::BLACK);
+        assert_eq!(ink.title, Rgb565::WHITE);
+        assert_eq!(ink.meta, Rgb565::CSS_LIGHT_GRAY);
+        assert_eq!(ink.dim, Rgb565::CSS_DIM_GRAY);
+        assert_eq!(ink.accent, Rgb565::CSS_ORANGE);
+        assert_eq!(ink.danger, Rgb565::CSS_RED);
+    }
+
+    #[test]
+    fn dusk_and_studio_are_named_swaps() {
+        let ink = palette(Theme::Ink);
+        let dusk = palette(Theme::Dusk);
+        let studio = palette(Theme::Studio);
+        assert_ne!(dusk.bg, ink.bg);
+        assert_ne!(dusk.title, ink.title);
+        assert_ne!(dusk.accent, ink.accent);
+        assert_ne!(studio.bg, ink.bg);
+        assert_ne!(studio.title, ink.title);
+        assert_ne!(studio.accent, ink.accent);
+        assert_ne!(dusk.accent, studio.accent);
+        assert_ne!(dusk.bg, studio.bg);
+        assert_eq!(dusk.bg, rgb(80, 36, 12));
+        assert_eq!(dusk.accent, rgb(255, 200, 48));
+        assert_eq!(studio.bg, rgb(12, 28, 72));
+        assert_eq!(studio.accent, rgb(48, 160, 255));
     }
 }

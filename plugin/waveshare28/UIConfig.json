@@ -62,7 +62,8 @@
           "bar_gap_portrait",
           "bar_gap_landscape",
           "strip_portrait",
-          "strip_landscape"
+          "strip_landscape",
+          "theme"
         ]
       },
       "content": [
@@ -218,6 +219,21 @@
             { "value": "progress", "label": "TRANSLATE.STRIP_PROGRESS" },
             { "value": "stream", "label": "TRANSLATE.STRIP_STREAM" },
             { "value": "off", "label": "TRANSLATE.STRIP_OFF" }
+          ]
+        },
+        {
+          "id": "theme",
+          "element": "select",
+          "label": "TRANSLATE.THEME",
+          "doc": "TRANSLATE.THEME_DOC",
+          "value": {
+            "value": "ink",
+            "label": "TRANSLATE.THEME_INK"
+          },
+          "options": [
+            { "value": "ink", "label": "TRANSLATE.THEME_INK" },
+            { "value": "dusk", "label": "TRANSLATE.THEME_DUSK" },
+            { "value": "studio", "label": "TRANSLATE.THEME_STUDIO" }
           ]
         }
       ]

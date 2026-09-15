@@ -86,6 +86,23 @@ impl Default for Strip {
     }
 }
 
+/// Named colour set. Tokens, not a CSS engine. `ink` is the shipped
+/// black / white / orange panel. `dusk` and `studio` must read at
+/// arm's length on RGB565. Live after `set`; no reboot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Ink,
+    Dusk,
+    Studio,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::Ink
+    }
+}
+
 /// Clockwise degrees to the counter-clockwise value fbtft's `rotate` uses
 /// for the same physical orientation.
 pub fn fbtft_rotate(clockwise: u16) -> u16 {
@@ -154,6 +171,8 @@ pub struct Config {
     pub strip_portrait: Strip,
     /// Strip occupancy on landscape rotations (90, 270).
     pub strip_landscape: Strip,
+    /// Colour tokens. Default is the shipped ink set.
+    pub theme: Theme,
 
     /// Volumio state endpoint.
     pub state_url: String,
@@ -196,6 +215,7 @@ impl Default for Config {
             bar_gap_landscape: BarGap::Default,
             strip_portrait: Strip::Progress,
             strip_landscape: Strip::Progress,
+            theme: Theme::Ink,
 
             state_url: "http://localhost:3000/api/v1/getState".into(),
             status_url: "http://localhost:3000/status".into(),
@@ -306,6 +326,7 @@ mod tests {
         assert_eq!(cfg.bar_gap_landscape, BarGap::Default);
         assert_eq!(cfg.strip_portrait, Strip::Progress);
         assert_eq!(cfg.strip_landscape, Strip::Progress);
+        assert_eq!(cfg.theme, Theme::Ink);
     }
 
     #[test]
@@ -360,7 +381,8 @@ mod tests {
              bar_gap_portrait = \"roomy\"\n\
              bar_gap_landscape = \"tight\"\n\
              strip_portrait = \"off\"\n\
-             strip_landscape = \"stream\"\n",
+             strip_landscape = \"stream\"\n\
+             theme = \"dusk\"\n",
         );
         let cfg = Config::load(f.path()).unwrap();
         assert_eq!(cfg.status_text_portrait, StatusText::Large);
@@ -369,6 +391,11 @@ mod tests {
         assert_eq!(cfg.bar_gap_landscape, BarGap::Tight);
         assert_eq!(cfg.strip_portrait, Strip::Off);
         assert_eq!(cfg.strip_landscape, Strip::Stream);
+        assert_eq!(cfg.theme, Theme::Dusk);
+        let f = write("theme = \"studio\"\n");
+        assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Studio);
+        let f = write("theme = \"ink\"\n");
+        assert_eq!(Config::load(f.path()).unwrap().theme, Theme::Ink);
     }
 
     #[test]
@@ -378,6 +405,8 @@ mod tests {
         let f = write("status_text_landscape = \"huge\"\n");
         assert!(Config::load(f.path()).is_err());
         let f = write("strip_portrait = \"pcm\"\n");
+        assert!(Config::load(f.path()).is_err());
+        let f = write("theme = \"neon\"\n");
         assert!(Config::load(f.path()).is_err());
     }
 

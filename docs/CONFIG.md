@@ -101,9 +101,9 @@ family. 3A+ KMS is a status string, not a switch.
 Writes the durable file, then applies. Several keys on one line are
 applied together, so a backend and a rotation cannot be half-written.
 
-Live keys (`status_text_*`, `bar_gap_*`, `strip_*`) rewrite the toml
-and restart the unit only. They do not touch `userconfig.txt` or
-`cmdline.txt`. Any other key, or a mix of live and overlay keys,
+Live keys (`status_text_*`, `bar_gap_*`, `strip_*`, `theme`) rewrite
+the toml and restart the unit only. They do not touch `userconfig.txt`
+or `cmdline.txt`. Any other key, or a mix of live and overlay keys,
 runs a full `apply`.
 
     sudo waveshare28-config set rotation=270
@@ -175,6 +175,7 @@ Defaults, used when the file is absent or a key is omitted:
     bar_gap_landscape=default
     strip_portrait=progress
     strip_landscape=progress
+    theme=ink
 
 ### `rotation`
 
@@ -356,6 +357,29 @@ Transport, title and artist do not move.
 
     sudo waveshare28-config set strip_landscape=stream
 
+### `theme`
+
+`ink`, `dusk` or `studio`. Colour tokens for the panel. Not a CSS
+engine: each name is a fixed RGB565 set.
+
+`ink` (default) is the shipped black ground, white title, light-gray
+meta, dim-gray trough, orange volume fill, red mute.
+
+`dusk` is brown ground, cream type, amber volume.
+
+`studio` is navy ground, ice type, blue volume.
+
+Cover art does not recolour. The tokens show on the ground around
+the text and bars, the title and artist, the clocks, the transport
+labels, and the volume fill. The bar that changes colour is volume
+(accent). Progress fill follows the title colour. A cover tap (the
+address overlay) is the loudest view of the ground.
+
+A theme-only `set` is live: toml and unit restart, no overlay
+rewrite, no reboot. Geometry, strip occupancy and fonts do not move.
+
+    sudo waveshare28-config set theme=dusk
+
 ---
 
 ## What `apply` writes
@@ -446,6 +470,7 @@ The generated toml is only what the renderer needs from these keys:
     bar_gap_landscape = "default"
     strip_portrait = "progress"
     strip_landscape = "progress"
+    theme = "ink"
 
 `fb_dev` is written only when `fb_st7789v` is already registered, so
 `apply` cannot replace a working panel path with `/dev/fb1`. The
@@ -506,6 +531,7 @@ Larger status text, more space between the slider and the progress
 bar, and stream IN on a landscape mount:
 
     sudo waveshare28-config set status_text_landscape=large bar_gap_landscape=roomy strip_landscape=stream
+    sudo waveshare28-config set theme=dusk
 
 After a kernel OTA that has dropped `fbcon=`:
 
