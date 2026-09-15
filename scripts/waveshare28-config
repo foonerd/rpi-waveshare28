@@ -161,6 +161,17 @@ validate_strip() {
     esac
 }
 
+# Keys that only rewrite the toml and restart the unit. They must not
+# touch userconfig.txt or cmdline.txt: those are firmware overlays.
+is_live_key() {
+    case "$1" in
+        status_text_portrait|status_text_landscape|bar_gap_portrait|bar_gap_landscape|strip_portrait|strip_landscape)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 validate_hdmi() {
     case "$1" in
         off|on) ;;
@@ -372,6 +383,31 @@ panel_fb_dev() {
     local idx
     idx="$(live_panel_fb_index)" || return 1
     printf '/dev/fb%s' "$idx"
+}
+
+# fbtft sizes the node at boot. Clockwise 0/180 is 240×320; 90/270 is 320×240.
+fb_layout_virtual_size() {
+    case "$rotation" in
+        90|270) printf '320,240' ;;
+        *) printf '240,320' ;;
+    esac
+}
+
+panel_fb_virtual_size() {
+    local dev name
+    dev="$(panel_fb_dev)" || return 1
+    name="${dev##*/}"
+    [[ -r /sys/class/graphics/${name}/virtual_size ]] || return 1
+    tr -d '[:space:]' < "/sys/class/graphics/${name}/virtual_size"
+}
+
+# 0 when the live panel fb already matches this rotation's layout.
+fb_size_matches_layout() {
+    local live want
+    [[ "$backend" == framebuffer ]] || return 0
+    live="$(panel_fb_virtual_size)" || return 1
+    want="$(fb_layout_virtual_size)"
+    [[ "$live" == "$want" ]]
 }
 
 fbcon_map_token() {
@@ -851,7 +887,7 @@ enable_safely() {
         die "systemd-analyze verify reported problems; unit not enabled"
     fi
 
-    local dev
+    local dev live want
     if ! dev="$(backend_device)" || [[ ! -e "$dev" ]]; then
         if [[ "$backend" == framebuffer ]]; then
             log "${PANEL_FB_NAME} is not present; backend=framebuffer applies on the next boot"
@@ -863,6 +899,19 @@ enable_safely() {
             systemctl stop "$UNIT" >/dev/null 2>&1 || true
             systemctl enable "$UNIT" >/dev/null
         fi
+        return 0
+    fi
+
+    # Overlay is live but still the previous boot's size. Starting would
+    # exit 1 and Restart=on-failure would loop until StartLimitBurst.
+    if [[ "$backend" == framebuffer ]] && ! fb_size_matches_layout; then
+        live="$(panel_fb_virtual_size || true)"
+        want="$(fb_layout_virtual_size)"
+        log "live ${PANEL_FB_NAME} is ${live:-unknown}, layout for rotation=${rotation} is ${want}"
+        log "fbtft sizes the node at boot; not starting this boot"
+        systemctl stop "$UNIT" >/dev/null 2>&1 || true
+        systemctl enable "$UNIT" >/dev/null
+        log "unit enabled. Reboot for rotate=$(fbtft_rotate "$rotation") to take effect."
         return 0
     fi
 
@@ -964,17 +1013,36 @@ cmd_apply() {
     fi
     if [[ "$backend" == framebuffer ]] && ! panel_fb_dev >/dev/null; then
         log "reboot required: ${PANEL_FB_NAME} is not on this boot."
+    elif [[ "$backend" == framebuffer ]] && ! fb_size_matches_layout; then
+        log "reboot required: live fb is $(panel_fb_virtual_size), layout is $(fb_layout_virtual_size)."
     fi
+}
+
+apply_live() {
+    write_toml
+    if [[ ! -f ${UNIT_DIR}/${UNIT} ]]; then
+        log "unit not installed; running a full apply"
+        cmd_apply
+        return
+    fi
+    systemctl restart "$UNIT" || die "unit failed to restart; journalctl -u ${UNIT}"
+    sleep 1
+    systemctl is-active --quiet "$UNIT" || {
+        systemctl status "$UNIT" --no-pager || true
+        die "unit did not stay running after live apply"
+    }
+    log "applied live keys. boot overlays unchanged."
 }
 
 cmd_set() {
     require_root
     load_conf
 
-    local arg key value
+    local arg key value live_only=1
     for arg in "$@"; do
         key="${arg%%=*}"
         value="${arg#*=}"
+        is_live_key "$key" || live_only=0
         case "$key" in
             rotation) rotation="$value" ;;
             speed)    speed="$value" ;;
@@ -1002,7 +1070,11 @@ cmd_set() {
     validate_strip "$strip_portrait"
     validate_strip "$strip_landscape"
     save_conf
-    cmd_apply
+    if [[ "$live_only" -eq 1 ]]; then
+        apply_live
+    else
+        cmd_apply
+    fi
 }
 
 cmd_detect() {
@@ -1034,7 +1106,11 @@ cmd_show_json() {
     if [[ "$backend" == framebuffer ]]; then
         if dev="$(panel_fb_dev)"; then
             printf '"device":%s,' "$(json_str "$dev")"
-            printf '"reboot_required":false,'
+            if fb_size_matches_layout; then
+                printf '"reboot_required":false,'
+            else
+                printf '"reboot_required":true,'
+            fi
         else
             printf '"device":null,'
             printf '"reboot_required":true,'

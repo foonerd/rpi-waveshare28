@@ -82,9 +82,11 @@ Prints the loaded settings. No root. A missing durable file is not an
 error: defaults are used and `source` says so. `show --json` is the
 same data plus the `detect` object, for the plugin. It also reports
 `device` (live `fb_st7789v` or SPI path) and `reboot_required`.
-`reboot_required` is true only for `backend=framebuffer` when
-`fb_st7789v` is not on this boot. A missing `/dev/spidev0.0` is not
-a reboot: Pi 5 names that bus `/dev/spidev10.0`.
+`reboot_required` is true for `backend=framebuffer` when
+`fb_st7789v` is not on this boot, or when it is live but its
+`virtual_size` does not match this rotation (fbtft sizes the node
+at boot). A missing `/dev/spidev0.0` is not a reboot: Pi 5 names
+that bus `/dev/spidev10.0`.
 
 ### `detect`
 
@@ -96,11 +98,17 @@ family. 3A+ KMS is a status string, not a switch.
 
 ### `set key=value...`
 
-Writes the durable file, then runs `apply`. Several keys on one line are
+Writes the durable file, then applies. Several keys on one line are
 applied together, so a backend and a rotation cannot be half-written.
+
+Live keys (`status_text_*`, `bar_gap_*`, `strip_*`) rewrite the toml
+and restart the unit only. They do not touch `userconfig.txt` or
+`cmdline.txt`. Any other key, or a mix of live and overlay keys,
+runs a full `apply`.
 
     sudo waveshare28-config set rotation=270
     sudo waveshare28-config set backend=framebuffer console=release
+    sudo waveshare28-config set strip_landscape=stream
 
 Unknown keys are refused. A typo does not become a silent no-op.
 
@@ -191,7 +199,9 @@ as people usually mount it, is `rotation=270` / `dtparam=rotate=90`.
 
 On `backend=framebuffer` the framebuffer size must match that layout or
 the renderer refuses to open. Changing rotation after a framebuffer boot
-needs a reboot: fbtft has already sized the panel node.
+needs a reboot: fbtft has already sized the panel node. `apply` then
+stops the unit, leaves it enabled, and sets `reboot_required` instead
+of starting a crash loop.
 
 ### `speed`
 
@@ -301,8 +311,8 @@ the address face is 468 px for a 39-character IPv6 address, which does
 not fit either frame. Large mode wraps; it does not scale one line.
 
 The active key is the one that matches `rotation`: portrait for 0 and
-180, landscape for 90 and 270. Changing either is live: `apply`
-rewrites the toml and restarts the unit. No reboot.
+180, landscape for 90 and 270. A status-text-only `set` is live: toml
+and unit restart, no overlay rewrite, no reboot.
 
     sudo waveshare28-config set status_text_landscape=large
 
@@ -313,7 +323,8 @@ and the progress bar. Named steps, not pixels.
 
 Extra room is taken from album art, never from the transport strip
 (40 px hit targets). Defaults match the shipped layout. Same
-orientation rule as status text. Live after `apply`; no reboot.
+orientation rule as status text. A bar-gap-only `set` is live: toml
+and unit restart, no overlay rewrite, no reboot.
 
     sudo waveshare28-config set bar_gap_landscape=roomy
 
@@ -339,8 +350,9 @@ invented when those fields are empty, and ALSA OUT is not in
 
 `off` leaves the slot blank.
 
-The active key is the one that matches `rotation`. Live after
-`apply`; no reboot. Transport, title and artist do not move.
+The active key is the one that matches `rotation`. A strip-only
+`set` is live: toml and unit restart, no overlay rewrite, no reboot.
+Transport, title and artist do not move.
 
     sudo waveshare28-config set strip_landscape=stream
 
@@ -540,7 +552,8 @@ would only toast "Settings applied." Enable (`onStart`) runs `apply`
 and offers a reboot only when `reboot_required` is true (framebuffer
 overlay not live). Default `backend=spi` does not reboot. `console=`
 only rewrites the unit. Status text, bar spacing and track strip rewrite the toml
-and restart the unit; they do not reboot. Disabling the plugin calls
+and restart the unit; they do not rewrite boot overlays and they do
+not reboot. Disabling the plugin calls
 `recover` and keeps `/boot/waveshare28.conf`.
 
 Named settings backups (Soloist-style) live in
