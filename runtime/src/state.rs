@@ -158,6 +158,18 @@ pub struct PlayerState {
     pub volume: Option<u8>,
     /// Mute state.
     pub mute: Option<bool>,
+    /// Shuffle. From getState; REST can toggle it.
+    #[serde(default)]
+    pub random: Option<bool>,
+    /// Repeat all. From getState; REST can toggle it.
+    #[serde(default)]
+    pub repeat: Option<bool>,
+    /// Repeat one. From getState only: REST cannot set repeatSingle.
+    #[serde(default, rename = "repeatSingle")]
+    pub repeat_single: Option<bool>,
+    /// Source plugin name, e.g. `mpd`, `webradio`. Not an ALSA device.
+    #[serde(default, deserialize_with = "opt_loose_string")]
+    pub service: Option<String>,
 }
 
 impl PlayerState {
@@ -240,12 +252,9 @@ impl PlayerState {
     /// True when two states describe the same screen apart from the parts
     /// that are repainted individually.
     ///
-    /// `seek` advances every second while playing and volume can change at any
-    /// time, so comparing whole states makes them differ on nearly every poll.
-    /// Clearing and repainting the panel that often is visible as a flicker.
-    /// Everything here changes only when the track or transport state does, so
-    /// this is what gates a full redraw; progress and volume are repainted in
-    /// place.
+    /// `seek` advances every second while playing, so comparing whole states
+    /// would flicker. Volume, mute and modes sit on the dock and surfaces, so
+    /// they gate a full redraw. Progress is still painted in place.
     pub fn same_scene(&self, other: &Self) -> bool {
         self.status == other.status
             && self.title == other.title
@@ -257,6 +266,12 @@ impl PlayerState {
             && self.track_type == other.track_type
             && self.codec == other.codec
             && self.bitrate == other.bitrate
+            && self.volume == other.volume
+            && self.mute == other.mute
+            && self.random == other.random
+            && self.repeat == other.repeat
+            && self.repeat_single == other.repeat_single
+            && self.service == other.service
     }
 }
 
@@ -330,6 +345,16 @@ pub enum Command {
     Next,
     /// Set volume to a percentage.
     Volume(u8),
+    /// Seek to a position in seconds.
+    Seek(u32),
+    /// Mute output. Volumio restores the previous level on unmute.
+    Mute,
+    /// Unmute output.
+    Unmute,
+    /// Toggle shuffle. REST has no set-absolute without a value dance.
+    Random,
+    /// Toggle repeat-all. REST cannot set repeatSingle (`one`).
+    Repeat,
 }
 
 impl Command {
@@ -340,6 +365,11 @@ impl Command {
             Command::Toggle => "cmd=toggle".into(),
             Command::Next => "cmd=next".into(),
             Command::Volume(v) => format!("cmd=volume&volume={}", v.min(100)),
+            Command::Seek(secs) => format!("cmd=seek&position={secs}"),
+            Command::Mute => "cmd=volume&volume=mute".into(),
+            Command::Unmute => "cmd=volume&volume=unmute".into(),
+            Command::Random => "cmd=random".into(),
+            Command::Repeat => "cmd=repeat".into(),
         }
     }
 }
@@ -518,6 +548,31 @@ mod state_tests {
 
         let empty = parse(r#"{}"#);
         assert_eq!(empty.stream_info(), None);
+    }
+
+    #[test]
+    fn command_query_matches_the_rest_contract() {
+        use super::Command;
+        assert_eq!(Command::Seek(42).query(), "cmd=seek&position=42");
+        assert_eq!(Command::Mute.query(), "cmd=volume&volume=mute");
+        assert_eq!(Command::Unmute.query(), "cmd=volume&volume=unmute");
+        assert_eq!(Command::Random.query(), "cmd=random");
+        assert_eq!(Command::Repeat.query(), "cmd=repeat");
+    }
+
+    #[test]
+    fn same_scene_includes_volume_mute_and_modes() {
+        let a = parse(r#"{"status":"play","title":"T","volume":40,"mute":false,"random":false}"#);
+        let b = parse(
+            r#"{"status":"play","title":"T","volume":40,"mute":false,"random":false,"seek":2000}"#,
+        );
+        assert!(a.same_scene(&b));
+        let c = parse(r#"{"status":"play","title":"T","volume":42,"mute":false,"random":false}"#);
+        assert!(!a.same_scene(&c));
+        let d = parse(r#"{"status":"play","title":"T","volume":40,"mute":true,"random":false}"#);
+        assert!(!a.same_scene(&d));
+        let e = parse(r#"{"status":"play","title":"T","volume":40,"mute":false,"random":true}"#);
+        assert!(!a.same_scene(&e));
     }
 
     #[test]

@@ -279,7 +279,7 @@ stops.
 
 **`share`** — fbcon stays bound. Kernel messages and a getty redraw of
 the QR overwrite the player. The renderer is still running; the next
-scene change (or a cover tap) paints it back.
+scene change (or closing a surface) paints it back.
 
 The panel runs as `volumio` and cannot write sysfs. The unit uses
 `ExecStartPre=` / `ExecStopPost=` with `+` so those two writes run as
@@ -319,29 +319,27 @@ and unit restart, no overlay rewrite, no reboot.
 
 ### `bar_gap_portrait` / `bar_gap_landscape`
 
-`tight`, `default` or `roomy`. Vertical space between the volume slider
-and the progress bar. Named steps, not pixels.
-
-Extra room is taken from album art, never from the transport strip
-(40 px hit targets). Defaults match the shipped layout. Same
-orientation rule as status text. A bar-gap-only `set` is live: toml
-and unit restart, no overlay rewrite, no reboot.
+`tight`, `default` or `roomy`. Kept as a durable key so a typo is
+refused. Sitting S compose ignores it: the A.1 / A.2 redlines set the
+boxes. A bar-gap-only `set` is still live: toml and unit restart, no
+overlay rewrite, no reboot. The gap on glass does not move.
 
     sudo waveshare28-config set bar_gap_landscape=roomy
 
 ### `strip_portrait` / `strip_landscape`
 
-`progress`, `stream` or `off`. What occupies the slot between the
-volume slider and the transport buttons.
+`progress`, `stream` or `off`. What occupies the seek slot on the
+resting face.
 
-`progress` (default) is a 6 px bar with elapsed on the left and
-total on the right, the same clocks as the Web player. It paints
-only when `getState` publishes a duration greater than zero: local,
-DLNA, network, and sources that author per-track length (Radio
-Paradise RP2). Live MPD webradio (Selection Classic FM, Radio
-Paradise AAC) sends duration 0 and the slot stays blank. The volume
-slider keeps a speaker mark and the orange fill so the two rows
-cannot be mistaken for each other.
+`progress` (default) is a 3 px bar with elapsed on the left and
+total on the right, the same clocks as the Web player, plus a 4×12
+knob. A drag seeks on release; a tap cycles Progress / Stream.
+It paints only when `getState` publishes a duration greater than
+zero: local, DLNA, network, and sources that author per-track
+length (Radio Paradise RP2). Live MPD webradio (Selection Classic
+FM, Radio Paradise AAC) sends duration 0 and the slot stays blank.
+Volume lives on the dock and the Volume surface (accent fill), so
+the two cannot be mistaken for each other.
 
 `stream` paints IN format from the fields the source already wrote:
 `trackType` or `codec`, `bitdepth`, `samplerate`, `bitrate`. Service
@@ -349,7 +347,7 @@ names such as `webradio` are not a codec and are skipped. Nothing is
 invented when those fields are empty, and ALSA OUT is not in
 `getState`.
 
-`off` leaves the slot blank.
+`off` hides the slot and grows art into that band.
 
 The active key is the one that matches `rotation`. A strip-only
 `set` is live: toml and unit restart, no overlay rewrite, no reboot.
@@ -376,9 +374,9 @@ cream. Do not brighten its ground.
 Cover art does not recolour. The tokens show on the ground around
 the text and bars, the title and artist, the clocks, the transport
 labels, and the volume fill. The bar that changes colour is volume
-(accent). Progress fill follows the title colour. A cover tap (the
-address overlay) is the loudest view of the ground. Geometry, strip
-occupancy, fonts and cover-tap do not move.
+(accent). Progress fill follows the title colour. Status (the `i`
+ring) and the Artwork surface are the loudest views of the ground.
+Geometry, strip occupancy and fonts do not move.
 
 A theme-only `set` is live: toml and unit restart, no overlay
 rewrite, no reboot. Geometry, strip occupancy and fonts do not move.

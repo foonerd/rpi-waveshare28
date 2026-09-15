@@ -49,10 +49,9 @@ impl Default for StatusText {
     }
 }
 
-/// Vertical space between the volume slider and the progress bar.
-///
-/// Named steps, not pixels. Extra room is taken from album art, never from
-/// the transport strip (40 px hit targets).
+/// Named gap step. Sitting S compose ignores this: A.1 / A.2 redlines
+/// set the boxes. The key stays so `deny_unknown_fields` cannot smuggle
+/// a typo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BarGap {
@@ -67,11 +66,12 @@ impl Default for BarGap {
     }
 }
 
-/// What occupies the slot between the volume slider and the transport.
+/// What occupies the seek slot on the resting face.
 ///
-/// Default is the shipped progress bar. `stream` paints the IN fields the
-/// source wrote (`trackType` / `codec` / `bitdepth` / `samplerate` /
-/// `bitrate`). `off` leaves the slot blank. Never invents an ALSA OUT.
+/// Default is the progress bar. `stream` paints the IN fields the source
+/// wrote (`trackType` / `codec` / `bitdepth` / `samplerate` /
+/// `bitrate`). `off` hides the slot and grows art. Never invents an
+/// ALSA OUT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Strip {
@@ -96,6 +96,17 @@ pub enum Theme {
     Dusk,
     Studio,
     Night,
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ink => "ink",
+            Self::Dusk => "dusk",
+            Self::Studio => "studio",
+            Self::Night => "night",
+        }
+    }
 }
 
 impl Default for Theme {
@@ -185,9 +196,9 @@ pub struct Config {
     pub art_base: String,
     /// How often to poll it, milliseconds.
     pub poll_interval_ms: u64,
-    /// Minimum gap between two accepted touches, milliseconds. The controller
-    /// reports repeatedly while a finger is held; this is what stops one press
-    /// becoming a burst of commands.
+    /// Minimum gap between two accepted press-downs, milliseconds.
+    /// Sitting S default is 50. Hold-to-repeat and seek-scrub live in
+    /// the main loop, not here.
     pub touch_debounce_ms: u64,
 }
 
@@ -223,7 +234,7 @@ impl Default for Config {
             command_url: "http://localhost:3000/api/v1/commands/".into(),
             art_base: "http://localhost:3000".into(),
             poll_interval_ms: 500,
-            touch_debounce_ms: 300,
+            touch_debounce_ms: 50,
         }
     }
 }
@@ -328,6 +339,7 @@ mod tests {
         assert_eq!(cfg.strip_portrait, Strip::Progress);
         assert_eq!(cfg.strip_landscape, Strip::Progress);
         assert_eq!(cfg.theme, Theme::Ink);
+        assert_eq!(cfg.touch_debounce_ms, 50);
     }
 
     #[test]

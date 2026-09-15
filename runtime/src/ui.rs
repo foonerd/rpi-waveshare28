@@ -8,7 +8,11 @@
 //!
 //! Coordinates are in the rotated frame, the same one the display driver
 //! presents. Touch coordinates arrive from the controller unrotated, so
-//! [`hit`] applies the inverse transform before testing.
+//! [`Layout::map`] is applied before hit testing.
+//!
+//! Sitting S (ADR-0020): resting face is display-only plus large hotspots.
+//! Type map, stock faces only: ~13/~11 bold → [`FONT_9X15_BOLD`]; ~9/~8/~7
+//! → [`FONT_6X10`]. Status IP uses [`FONT_10X20`] when status text is large.
 
 use embedded_graphics::{
     mono_font::{
@@ -16,7 +20,7 @@ use embedded_graphics::{
     },
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::{Circle, Line, PrimitiveStyle, Rectangle, Triangle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
@@ -31,18 +35,13 @@ pub const NATIVE_W: u16 = 240;
 /// Panel height in the controller's native frame.
 pub const NATIVE_H: u16 = 320;
 
-const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
-const META_FONT: &MonoFont = &FONT_6X10;
+pub(crate) const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
+pub(crate) const META_FONT: &MonoFont = &FONT_6X10;
 
-/// Speaker mark to the left of the volume track. ASCII fonts have no
-/// speaker glyph. 12×10: cabinet + cone, then waves or a mute cross.
-const VOL_ICON_W: u32 = 12;
-const VOL_ICON_H: u32 = 10;
-const VOL_ICON_GAP: u32 = 2;
-
-/// Cabinet and filled cone. Coordinates in the 12×10 icon.
+/// Cabinet + cone. 12×10. The mark that was signed off on the volume strip.
+const SPEAKER_W: i32 = 12;
+const SPEAKER_H: i32 = 10;
 const SPEAKER_BODY: &[(u8, u8)] = &[
-    // cabinet
     (0, 3),
     (1, 3),
     (0, 4),
@@ -51,7 +50,6 @@ const SPEAKER_BODY: &[(u8, u8)] = &[
     (1, 5),
     (0, 6),
     (1, 6),
-    // cone
     (2, 2),
     (2, 3),
     (2, 4),
@@ -77,15 +75,11 @@ const SPEAKER_BODY: &[(u8, u8)] = &[
     (4, 8),
     (4, 9),
 ];
-
-/// Two arcs to the right of the cone, the usual “has sound” mark.
 const SPEAKER_WAVES: &[(u8, u8)] = &[
-    // inner
     (6, 2),
     (7, 3),
     (7, 6),
     (6, 7),
-    // outer
     (8, 1),
     (9, 2),
     (10, 3),
@@ -93,8 +87,6 @@ const SPEAKER_WAVES: &[(u8, u8)] = &[
     (9, 7),
     (8, 8),
 ];
-
-/// Cross in the wave area when muted or at zero.
 const SPEAKER_MUTE_X: &[(u8, u8)] = &[
     (6, 1),
     (7, 2),
@@ -122,14 +114,15 @@ const SPEAKER_MUTE_X: &[(u8, u8)] = &[
     (6, 7),
 ];
 
-/// The orange track, after the speaker. Hit mapping uses this so 0% is
-/// the start of the bar, not the icon.
-fn volume_track(slot: Rectangle) -> Rectangle {
-    let inset = VOL_ICON_W + VOL_ICON_GAP;
-    Rectangle::new(
-        slot.top_left + Point::new(inset as i32, 0),
-        Size::new(slot.size.width.saturating_sub(inset), slot.size.height),
-    )
+/// Map a point on a seek strip to 0..1, padded 12 px each end.
+pub fn seek_fraction(slot: Rectangle, p: Point) -> f32 {
+    let pad = 12i32;
+    let x0 = slot.top_left.x + pad;
+    let w = slot.size.width as i32 - pad * 2;
+    if w <= 0 {
+        return 0.0;
+    }
+    ((p.x - x0) as f32 / w as f32).clamp(0.0, 1.0)
 }
 
 /// Where everything sits, for one orientation.
@@ -151,14 +144,14 @@ pub struct Layout {
     pub frame: Rectangle,
     /// Album art.
     pub art: Rectangle,
-    /// Track text: title, artist, album, wrapped and centred.
+    /// Title / artist / album block. Tap opens metadata.
     pub text: Rectangle,
-    /// Volume slider.
-    pub volume: Rectangle,
-    /// Playback progress bar.
+    /// `i` ring hit target.
+    pub info: Rectangle,
+    /// Three-slot glyph dock.
+    pub dock: Rectangle,
+    /// Seek / stream strip. Empty height when `strip` is Off.
     pub progress: Rectangle,
-    /// Transport strip, split into equal thirds.
-    pub transport: Rectangle,
     /// Status-screen type for this orientation.
     pub status_text: StatusText,
     /// What occupies the volume-to-transport slot.
@@ -229,7 +222,7 @@ fn rect(x: i32, y: i32, w: u32, h: u32) -> Rectangle {
 }
 
 impl Layout {
-    fn pal(&self) -> Palette {
+    pub(crate) fn pal(&self) -> Palette {
         palette(self.theme)
     }
 
@@ -260,97 +253,74 @@ impl Layout {
 
     fn compose(
         rotation: u16,
-        gap: BarGap,
+        _gap: BarGap,
         status_text: StatusText,
         strip: Strip,
         theme: Theme,
     ) -> Self {
+        // Sitting S redlines supersede bar-gap geometry. The key stays.
         match rotation {
-            90 | 270 => Self::landscape(rotation, gap, status_text, strip, theme),
-            _ => Self::portrait(rotation, gap, status_text, strip, theme),
+            90 | 270 => Self::landscape(rotation, status_text, strip, theme),
+            _ => Self::portrait(rotation, status_text, strip, theme),
         }
     }
 
-    /// 240 wide by 320 tall. Art on top, everything else stacked beneath.
-    ///
-    /// Transport stays at y 292. Extra bar gap moves the slider up; roomy
-    /// also shortens the art box by 4 px so the text block still fits.
-    fn portrait(
-        rotation: u16,
-        gap: BarGap,
-        status_text: StatusText,
-        strip: Strip,
-        theme: Theme,
-    ) -> Self {
-        let (art_h, text_y, vol_y, prog_y) = match gap {
-            BarGap::Tight => (200, 214, 270, 280),
-            BarGap::Default => (200, 214, 268, 280),
-            BarGap::Roomy => (196, 210, 260, 280),
-        };
-        let (prog_y, prog_h) = match strip {
-            Strip::Off => (prog_y, 4),
-            _ => (prog_y - 4, 12),
+    /// ADR-0020 A.1. 240×320. Art 152, dock 52, seek 32. Off grows art
+    /// and drops the dock to the bottom edge.
+    fn portrait(rotation: u16, status_text: StatusText, strip: Strip, theme: Theme) -> Self {
+        let seek_on = strip != Strip::Off;
+        let (art_h, text_y, dock_y, seek_y, seek_h) = if seek_on {
+            (152, 162, 236, 288, 32)
+        } else {
+            (184, 194, 268, 320, 0)
         };
         Self {
             rotation,
             frame: rect(0, 0, 240, 320),
-            art: rect(20, 8, 200, art_h),
-            text: rect(4, text_y, 232, 48),
-            volume: rect(10, vol_y, 220, 6),
-            progress: rect(10, prog_y, 220, prog_h),
-            transport: rect(0, 292, 240, 28),
+            art: rect(44, 0, 152, art_h),
+            text: rect(12, text_y, 216, 74),
+            info: rect(192, 0, 48, 48),
+            dock: rect(0, dock_y, 240, 52),
+            progress: rect(0, seek_y, 240, seek_h),
             status_text,
             strip,
             theme,
         }
     }
 
-    /// 320 wide by 240 tall. Art on the left, text column on the right,
-    /// transport across the full width at the bottom.
-    ///
-    /// The transport is not in the column, which is the difference that
-    /// matters. At roughly 143 ppi a fingertip contact patch is 40 to 50
-    /// pixels, so three buttons in a 104 px column are 34 px wide: below the
-    /// point where they can be hit reliably, while occupying vertical space
-    /// they do not need. Full width makes them 106 by 40.
-    ///
-    /// The volume slider gains the same way. At 104 px one percent is one
-    /// pixel and the control is only good for coarse jumps; at 300 px it is
-    /// three pixels per percent and can actually be set.
-    ///
-    /// The cost is album art at 168 rather than 200. It is still by far the
-    /// largest element, and a slider that cannot be landed on is a worse
-    /// daily annoyance than 32 pixels of cover.
-    fn landscape(
-        rotation: u16,
-        gap: BarGap,
-        status_text: StatusText,
-        strip: Strip,
-        theme: Theme,
-    ) -> Self {
-        // Transport is pinned at y 200, height 40. Roomy steals 12 px from
-        // the art box; tight and default keep the 168 cover.
-        let (art_s, vol_y, prog_y) = match gap {
-            BarGap::Tight => (168, 178, 188),
-            BarGap::Default => (168, 178, 190),
-            BarGap::Roomy => (156, 168, 188),
-        };
-        let (prog_y, prog_h) = match strip {
-            Strip::Off => (prog_y, 4),
-            _ => (prog_y - 4, 12),
+    /// ADR-0020 A.2. 320×240. Art 200, text column 120, dock 40×44,
+    /// seek 40 full width. Off grows art into the seek band.
+    fn landscape(rotation: u16, status_text: StatusText, strip: Strip, theme: Theme) -> Self {
+        let seek_on = strip != Strip::Off;
+        let (art_h, col_h, dock_y, seek_y, seek_h): (u32, u32, i32, i32, u32) = if seek_on {
+            (200, 200, 156, 200, 40)
+        } else {
+            (240, 240, 196, 240, 0)
         };
         Self {
             rotation,
             frame: rect(0, 0, 320, 240),
-            art: rect(10, 4, art_s, art_s),
-            text: rect(184, 4, 132, art_s),
-            volume: rect(10, vol_y, 300, 6),
-            progress: rect(10, prog_y, 300, prog_h),
-            transport: rect(0, 200, 320, 40),
+            art: rect(0, 0, 200, art_h),
+            text: rect(200, 0, 120, col_h.saturating_sub(44)),
+            info: rect(276, 0, 44, 44),
+            dock: rect(200, dock_y, 120, 44),
+            progress: rect(0, seek_y, 320, seek_h),
             status_text,
             strip,
             theme,
         }
+    }
+
+    /// One of the three dock cells, 0 = controls, 1 = volume, 2 = metadata.
+    pub fn dock_cell(&self, i: u8) -> Rectangle {
+        let n = 3u32;
+        let w = self.dock.size.width / n;
+        rect(
+            self.dock.top_left.x + w as i32 * i32::from(i),
+            self.dock.top_left.y,
+            w,
+            self.dock.size.height,
+        )
     }
 
     /// Map a raw controller touch into this layout's frame.
@@ -358,7 +328,7 @@ impl Layout {
     /// The controller always reports in its native 240x320 portrait frame
     /// regardless of what the display driver was told, so rotating the panel
     /// does not rotate the input. This is where the two are reconciled.
-    fn map(&self, t: Touch) -> Point {
+    pub fn map(&self, t: Touch) -> Point {
         let (x, y) = (i32::from(t.x), i32::from(t.y));
         let (nw, nh) = (i32::from(NATIVE_W), i32::from(NATIVE_H));
 
@@ -371,91 +341,54 @@ impl Layout {
     }
 }
 
-/// A user action derived from a touch.
+/// Press / move / release after rotation mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    /// Previous track.
-    Prev,
-    /// Toggle play and pause.
-    PlayPause,
-    /// Next track.
-    Next,
-    /// Set volume to a percentage.
-    Volume(u8),
-    /// Tap on the art area: show host addresses.
-    Art,
+pub enum TouchEv {
+    Down(Point),
+    Move(Point),
+    Up(Point),
 }
 
-/// Map a touch to an action, or `None` if it landed on nothing.
-///
-/// The transport strip is split into equal thirds with no dead band between
-/// them: the targets are already far larger than a fingertip, and a gap only
-/// creates places where a deliberate press does nothing.
-pub fn hit(layout: &Layout, t: Touch) -> Option<Action> {
-    let p = layout.map(t);
+/// Face hotspot. Surfaces have their own hit map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hotspot {
+    Art,
+    Info,
+    Title,
+    DockControls,
+    DockVolume,
+    DockMeta,
+    Seek,
+}
 
-    // Generous vertical slop on the slider. It is only a few pixels tall, and
-    // demanding that precision from a finger would make it unusable.
-    let slider = layout.volume;
-    let slider_zone = Rectangle::new(
-        slider.top_left - Point::new(0, 10),
-        Size::new(slider.size.width, slider.size.height + 20),
-    );
-    if slider_zone.contains(p) {
-        let track = volume_track(slider);
-        let dx = (p.x - track.top_left.x).max(0) as u32;
-        let pct = (dx * 100 / track.size.width.max(1)).min(100);
-        return Some(Action::Volume(pct as u8));
+/// Map a point on the resting face to a hotspot.
+pub fn face_hit(layout: &Layout, p: Point) -> Option<Hotspot> {
+    if layout.info.contains(p) {
+        return Some(Hotspot::Info);
     }
-
-    if layout.transport.contains(p) {
-        let third = layout.transport.size.width as i32 / 3;
-        let dx = p.x - layout.transport.top_left.x;
-        return Some(match dx {
-            d if d < third => Action::Prev,
-            d if d < 2 * third => Action::PlayPause,
-            _ => Action::Next,
+    if layout.art.contains(p) {
+        return Some(Hotspot::Art);
+    }
+    if layout.text.contains(p) {
+        return Some(Hotspot::Title);
+    }
+    if layout.dock.contains(p) {
+        let dx = p.x - layout.dock.top_left.x;
+        let third = layout.dock.size.width as i32 / 3;
+        return Some(if dx < third {
+            Hotspot::DockControls
+        } else if dx < 2 * third {
+            Hotspot::DockVolume
+        } else {
+            Hotspot::DockMeta
         });
     }
-
-    if layout.art.contains(p) {
-        return Some(Action::Art);
+    if layout.progress.size.height > 0 && layout.progress.contains(p) {
+        return Some(Hotspot::Seek);
     }
-
     None
 }
 
-/// Track text, word-wrapped into the column and centred.
-///
-/// Wrapping rather than a horizontal marquee. Three lines of fourteen
-/// characters covers most titles, and static text you can read at a glance is
-/// better than text that moves. Scrolling remains only as the fallback for
-/// content that still does not fit, and it scrolls the block vertically,
-/// which is the direction the overflow is in.
-#[derive(Debug, Default)]
-pub struct TextPane {
-    title: Vec<String>,
-    artist: Vec<String>,
-    album: Vec<String>,
-    /// Source strings, kept to detect a genuine change. Re-wrapping on every
-    /// poll would restart the scroll twice a second.
-    src: (String, String, String),
-    /// Total height of the composed block in pixels.
-    height: i32,
-    /// Pixels scrolled from the top.
-    offset: i32,
-    /// Pixels of overflow, zero when the block fits.
-    over: i32,
-    /// Direction of travel.
-    forward: bool,
-    /// Ticks left to hold at an end before reversing.
-    hold: u8,
-}
-
-/// Ticks held at each end before reversing.
-const HOLD_TICKS: u8 = 20;
-/// Pixels moved per tick.
-const STEP: i32 = 1;
 /// Vertical gap between lines of the same field.
 const LINE_GAP: i32 = 2;
 /// Vertical gap between fields.
@@ -492,7 +425,7 @@ fn push_wrapped(
 /// A word longer than the line is hard-split rather than left to overflow:
 /// long unbroken strings are common in filenames and stream titles, and
 /// silently clipping them loses the part most likely to identify the track.
-fn wrap(text: &str, width_px: u32, font: &MonoFont) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width_px: u32, font: &MonoFont) -> Vec<String> {
     let cols = (width_px / font.character_size.width).max(1) as usize;
     let mut out = Vec::new();
     let mut line = String::new();
@@ -539,9 +472,31 @@ fn block_height(lines: &[String], font: &MonoFont) -> i32 {
     lines.len() as i32 * line_h + (lines.len() as i32 - 1) * LINE_GAP
 }
 
+/// Track text, word-wrapped into the column.
+///
+/// Wrapping rather than a horizontal marquee. Scrolling is the fallback
+/// when the wrapped block is taller than the slot: the block moves
+/// vertically, which is the direction of the overflow.
+#[derive(Debug, Default)]
+pub struct TextPane {
+    title: Vec<String>,
+    artist: Vec<String>,
+    album: Vec<String>,
+    src: (String, String, String),
+    height: i32,
+    offset: i32,
+    over: i32,
+    forward: bool,
+    hold: u8,
+}
+
+/// Ticks held at each end before reversing.
+const HOLD_TICKS: u8 = 20;
+/// Pixels moved per tick.
+const STEP: i32 = 1;
+
 impl TextPane {
-    /// Re-wrap for new content. Does nothing if the strings are unchanged, so
-    /// a scroll in progress is not restarted by an ordinary poll.
+    /// Re-wrap for new content. Unchanged strings keep the scroll.
     pub fn set(&mut self, title: &str, artist: &str, album: &str, region: Rectangle) {
         let next = (title.to_string(), artist.to_string(), album.to_string());
         if self.src == next {
@@ -576,8 +531,7 @@ impl TextPane {
         self.hold = HOLD_TICKS;
     }
 
-    /// Advance one tick. Returns true if the position changed and the pane
-    /// needs repainting.
+    /// Advance one tick. True when the pane needs a repaint.
     pub fn step(&mut self) -> bool {
         if self.over == 0 {
             return false;
@@ -649,66 +603,6 @@ impl DrawTarget for RowBuf {
         }
         Ok(())
     }
-}
-
-/// Draw the text pane: title, artist and album, wrapped, centred both ways.
-///
-/// Vertically centred when the block fits, top-aligned and scrolled when it
-/// does not, because centring something that is moving reads as a fault
-/// rather than as a deliberate scroll.
-///
-/// Composed in memory and blitted in one write. See [`RowBuf`] for why.
-fn draw_text<D>(
-    target: &mut D,
-    region: Rectangle,
-    pane: &TextPane,
-    pal: Palette,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let mut buf = RowBuf::new(region.size, pal.bg);
-
-    let centred = TextStyleBuilder::new()
-        .baseline(Baseline::Top)
-        .alignment(Alignment::Center)
-        .build();
-    let cx = region.size.width as i32 / 2;
-
-    // Centre the block when it fits; otherwise start at the top and let the
-    // scroll offset move it.
-    let mut y = if pane.over == 0 {
-        (region.size.height as i32 - pane.height) / 2
-    } else {
-        -pane.offset
-    };
-
-    let fields: [(&Vec<String>, &MonoFont, Rgb565); 3] = [
-        (&pane.title, TITLE_FONT, pal.title),
-        (&pane.artist, META_FONT, pal.meta),
-        (&pane.album, META_FONT, pal.dim),
-    ];
-
-    let mut first = true;
-    for (lines, font, colour) in fields {
-        if lines.is_empty() {
-            continue;
-        }
-        if !first {
-            y += FIELD_GAP;
-        }
-        first = false;
-
-        let style = MonoTextStyle::new(font, colour);
-        for line in lines {
-            // Infallible: RowBuf discards out-of-bounds pixels.
-            let _ = Text::with_text_style(line, Point::new(cx, y), style, centred).draw(&mut buf);
-            y += font.character_size.height as i32 + LINE_GAP;
-        }
-        y -= LINE_GAP;
-    }
-
-    target.fill_contiguous(&region, buf.px.iter().copied())
 }
 
 /// Draw the status screen shown before the player answers.
@@ -849,32 +743,55 @@ where
     target.fill_contiguous(&region, buf.px.iter().copied())
 }
 
-/// Draw the whole screen.
+/// Draw the whole resting face.
 ///
-/// Clears and repaints, so this is only for a scene change: a different track,
-/// or a transport state change. A full frame is about 39 ms at 32 MHz, and
-/// doing that twice a second because `seek` advanced is visible as a flicker.
-/// Progress, volume and the scrolling rows are repainted individually.
+/// Clears and repaints, so this is only for a scene change. A full frame is
+/// about 39 ms at 32 MHz, and doing that twice a second because `seek`
+/// advanced is visible as a flicker. Progress and the text pane are
+/// repainted in place.
 pub fn draw<D>(
     target: &mut D,
     layout: &Layout,
     state: &PlayerState,
     art: Option<&Art>,
     pane: &TextPane,
+    scrub: Option<f32>,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    target.clear(layout.pal().bg)?;
+    draw_face(target, layout, state, art, pane, scrub)
+}
 
+/// Resting face: art, i ring, title block, dock, seek strip.
+pub fn draw_face<D>(
+    target: &mut D,
+    layout: &Layout,
+    state: &PlayerState,
+    art: Option<&Art>,
+    pane: &TextPane,
+    scrub: Option<f32>,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let pal = layout.pal();
+    target.clear(pal.bg)?;
     draw_art(target, layout, art)?;
-    draw_text(target, layout.text, pane, layout.pal())?;
-
-    draw_volume(target, layout, state)?;
-    draw_progress(target, layout, state)?;
-    draw_transport(target, layout, state)?;
-
+    draw_text(target, face_text_slot(layout), pane, pal)?;
+    draw_info_ring(target, layout, pal)?;
+    draw_dock(target, layout, state, pal)?;
+    draw_progress(target, layout, state, scrub)?;
     Ok(())
+}
+
+/// Repaint only the title block. The ticker uses this so a step does not
+/// clear art, dock or seek.
+pub fn draw_rows<D>(target: &mut D, layout: &Layout, pane: &TextPane) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_text(target, face_text_slot(layout), pane, layout.pal())
 }
 
 /// Draw the cover, centred in the art box.
@@ -907,51 +824,306 @@ where
             .draw(target)?;
     }
 
-    // Affordance: the whole art box opens the address overlay. A chip so
-    // that is findable on a cover that would otherwise hide it.
-    draw_info_mark(target, box_, pal)
+    Ok(())
 }
 
-/// Small `i` in the art-box corner. The hit target is the whole box.
-fn draw_info_mark<D>(target: &mut D, box_: Rectangle, pal: Palette) -> Result<(), D::Error>
+fn draw_info_ring<D>(target: &mut D, layout: &Layout, pal: Palette) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    const CHIP: u32 = 16;
-    let chip = Rectangle::new(
-        Point::new(
-            box_.top_left.x + 2,
-            box_.top_left.y + box_.size.height as i32 - CHIP as i32 - 2,
-        ),
-        Size::new(CHIP, CHIP),
-    );
-    chip.into_styled(PrimitiveStyle::with_fill(pal.dim))
+    // Hit stays 48×48 / 44×44. Paint only the ring: a full-hit fill is a
+    // 48 px slab on the cover. Hairline + dim — not meta, not 2 px.
+    let c = layout.info.center();
+    Circle::with_center(c, INFO_RING + 2)
+        .into_styled(PrimitiveStyle::with_fill(pal.bg))
         .draw(target)?;
-
-    let style = MonoTextStyle::new(META_FONT, pal.title);
+    Circle::with_center(c, INFO_RING)
+        .into_styled(PrimitiveStyle::with_stroke(pal.dim, 1))
+        .draw(target)?;
+    let style = MonoTextStyle::new(META_FONT, pal.dim);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
         .build();
-    Text::with_text_style(
-        "i",
-        chip.top_left + Point::new(CHIP as i32 / 2, CHIP as i32 / 2),
-        style,
-        centred,
-    )
-    .draw(target)?;
+    Text::with_text_style("IP", c, style, centred).draw(target)?;
     Ok(())
 }
 
-/// Repaint the text pane only.
-pub fn draw_rows<D>(target: &mut D, layout: &Layout, pane: &TextPane) -> Result<(), D::Error>
+/// A.1 / A.2 status ring. Hit stays 48×48 / 44×44.
+const INFO_RING: u32 = 18;
+
+/// Inset from the art box and the column edges. A.2 called this pad 10;
+/// without it landscape title sits on the art's right edge.
+const FACE_TEXT_PAD: i32 = 10;
+
+/// Top-left of the title block. Landscape's IP ring sits in the same
+/// column; the first line starts under that hit. Always inset from art.
+fn face_text_origin(layout: &Layout) -> Point {
+    let region = layout.text;
+    let overlap = layout.info.intersection(&region);
+    let under_info = overlap.size.width > 0 && layout.info.top_left.y <= region.top_left.y + 4;
+    let y = if under_info {
+        layout.info.top_left.y + layout.info.size.height as i32
+    } else {
+        region.top_left.y + FACE_TEXT_PAD
+    };
+    Point::new(region.top_left.x + FACE_TEXT_PAD, y)
+}
+
+fn face_text_width(layout: &Layout) -> u32 {
+    layout
+        .text
+        .size
+        .width
+        .saturating_sub((FACE_TEXT_PAD * 2) as u32)
+}
+
+/// Clip box for title / artist / album. Starts under the IP hit on
+/// landscape; inset from art on both orientations.
+pub fn face_text_slot(layout: &Layout) -> Rectangle {
+    let origin = face_text_origin(layout);
+    let bottom = layout.text.top_left.y + layout.text.size.height as i32;
+    let height = (bottom - origin.y).max(0) as u32;
+    Rectangle::new(origin, Size::new(face_text_width(layout), height))
+}
+
+/// Title, artist, album. Left-aligned in the slot. Centred vertically
+/// when the block fits; top-aligned and scrolled when it does not.
+fn draw_text<D>(
+    target: &mut D,
+    region: Rectangle,
+    pane: &TextPane,
+    pal: Palette,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    draw_text(target, layout.text, pane, layout.pal())
+    let mut buf = RowBuf::new(region.size, pal.bg);
+    let left = TextStyleBuilder::new()
+        .baseline(Baseline::Top)
+        .alignment(Alignment::Left)
+        .build();
+    let mut y = if pane.over == 0 {
+        (region.size.height as i32 - pane.height) / 2
+    } else {
+        -pane.offset
+    };
+    let fields: [(&Vec<String>, &MonoFont, Rgb565); 3] = [
+        (&pane.title, TITLE_FONT, pal.title),
+        (&pane.artist, META_FONT, pal.meta),
+        (&pane.album, META_FONT, pal.dim),
+    ];
+    let mut first = true;
+    for (lines, font, colour) in fields {
+        if lines.is_empty() {
+            continue;
+        }
+        if !first {
+            y += FIELD_GAP;
+        }
+        first = false;
+        let style = MonoTextStyle::new(font, colour);
+        for line in lines {
+            let _ = Text::with_text_style(line, Point::new(0, y), style, left).draw(&mut buf);
+            y += font.character_size.height as i32 + LINE_GAP;
+        }
+        y -= LINE_GAP;
+    }
+    target.fill_contiguous(&region, buf.px.iter().copied())
 }
 
-/// Repaint the volume-to-transport slot.
+fn draw_dock<D>(
+    target: &mut D,
+    layout: &Layout,
+    state: &PlayerState,
+    pal: Palette,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    layout
+        .dock
+        .into_styled(PrimitiveStyle::with_fill(pal.bg))
+        .draw(target)?;
+    Line::new(
+        Point::new(layout.dock.top_left.x, layout.dock.top_left.y),
+        Point::new(
+            layout.dock.top_left.x + layout.dock.size.width as i32 - 1,
+            layout.dock.top_left.y,
+        ),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(pal.dim, 1))
+    .draw(target)?;
+    let cells = [
+        layout.dock_cell(0),
+        layout.dock_cell(1),
+        layout.dock_cell(2),
+    ];
+    draw_dock_transport(target, cells[0], state.is_playing(), pal)?;
+    draw_speaker_mark(
+        target,
+        cells[1],
+        state.is_muted() || state.volume.unwrap_or(0) == 0,
+        pal,
+    )?;
+    draw_list_icon(target, cells[2], pal.meta)?;
+    Ok(())
+}
+
+/// One optical box for play, speaker and list. 22 is the A.1 glyph
+/// (~22 in an 80×52 cell). Landscape cells are 40 px: 36 filled them
+/// and left no gap.
+const DOCK_GLYPH: i32 = 22;
+
+fn dock_glyph_center(cell: Rectangle) -> Point {
+    cell.center()
+}
+
+/// Two bars as one box centered on `center`. The old pair used
+/// `c.x - (w + 2)` and `c.x + 2`, so `center()` was one pixel left
+/// of the ring (`Circle::with_center` / `Rectangle::with_center`).
+fn dock_pause_bars(center: Point) -> [Rectangle; 2] {
+    let w = 3.max(DOCK_GLYPH / 10);
+    let gap = 4;
+    let h = (DOCK_GLYPH * 12 / 28).max(1);
+    let pair = Rectangle::with_center(center, Size::new((2 * w + gap) as u32, h as u32));
+    let left = pair.top_left;
+    [
+        Rectangle::new(left, Size::new(w as u32, h as u32)),
+        Rectangle::new(
+            Point::new(left.x + w + gap, left.y),
+            Size::new(w as u32, h as u32),
+        ),
+    ]
+}
+
+/// Ringed play / pause. Circle + mark, same language as the reference dock.
+fn draw_dock_transport<D>(
+    target: &mut D,
+    cell: Rectangle,
+    playing: bool,
+    pal: Palette,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let c = dock_glyph_center(cell);
+    let d = DOCK_GLYPH as u32;
+    Circle::with_center(c, d)
+        .into_styled(PrimitiveStyle::with_stroke(pal.title, 2))
+        .draw(target)?;
+    if playing {
+        for bar in dock_pause_bars(c) {
+            bar.into_styled(PrimitiveStyle::with_fill(pal.title))
+                .draw(target)?;
+        }
+    } else {
+        let r = DOCK_GLYPH / 2;
+        Triangle::new(
+            Point::new(c.x - r * 5 / 14, c.y - r * 7 / 14),
+            Point::new(c.x - r * 5 / 14, c.y + r * 7 / 14),
+            Point::new(c.x + r * 7 / 14, c.y),
+        )
+        .into_styled(PrimitiveStyle::with_fill(pal.title))
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+fn draw_list_icon<D>(target: &mut D, cell: Rectangle, colour: Rgb565) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let c = dock_glyph_center(cell);
+    let w = DOCK_GLYPH;
+    let gap = DOCK_GLYPH / 5;
+    let block = gap * 2 + 2;
+    let top = c.y - block / 2;
+    for i in 0..3 {
+        Rectangle::new(
+            Point::new(c.x - w / 2, top + i * gap),
+            Size::new(w as u32, 2),
+        )
+        .into_styled(PrimitiveStyle::with_fill(colour))
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+/// The signed-off 12×10 speaker, 2×. 3× filled a 40 px landscape cell.
+/// Do not replace with a free triangle — that reads as an arrow.
+fn draw_speaker_mark<D>(
+    target: &mut D,
+    cell: Rectangle,
+    silent: bool,
+    pal: Palette,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    draw_speaker_at(target, dock_glyph_center(cell), silent, pal, 2)
+}
+
+/// Signed-off speaker, origin from `Rectangle::with_center` so it shares
+/// a center with the rest of a row.
+pub fn draw_speaker_at<D>(
+    target: &mut D,
+    center: Point,
+    silent: bool,
+    pal: Palette,
+    scale: i32,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let colour = speaker_colour(silent, if silent { 0 } else { 1 }, pal);
+    let box_ = speaker_box(center, scale);
+    let origin = box_.top_left;
+    let scale = scale.max(1);
+    plot_icon_px_scaled(target, origin, SPEAKER_BODY, colour, scale)?;
+    if silent {
+        plot_icon_px_scaled(target, origin, SPEAKER_MUTE_X, colour, scale)?;
+    } else {
+        plot_icon_px_scaled(target, origin, SPEAKER_WAVES, colour, scale)?;
+    }
+    Ok(())
+}
+
+/// Bounding box of the 12×10 speaker at `scale`, centered on `center`.
+pub fn speaker_box(center: Point, scale: i32) -> Rectangle {
+    let scale = scale.max(1);
+    Rectangle::with_center(
+        center,
+        Size::new((SPEAKER_W * scale) as u32, (SPEAKER_H * scale) as u32),
+    )
+}
+
+fn plot_icon_px_scaled<D>(
+    target: &mut D,
+    origin: Point,
+    pixels: &[(u8, u8)],
+    colour: Rgb565,
+    scale: i32,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let scale = scale.max(1);
+    for &(x, y) in pixels {
+        Rectangle::new(
+            Point::new(
+                origin.x + i32::from(x) * scale,
+                origin.y + i32::from(y) * scale,
+            ),
+            Size::new(scale as u32, scale as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(colour))
+        .draw(target)?;
+    }
+    Ok(())
+}
+
+/// Repaint the seek / stream slot.
 ///
 /// Progress uses seek/duration. Stream paints IN fields the source wrote.
 /// Off, or a source that published nothing for that mode, is black. The
@@ -960,15 +1132,16 @@ pub fn draw_progress<D>(
     target: &mut D,
     layout: &Layout,
     state: &PlayerState,
+    scrub: Option<f32>,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
     let pal = layout.pal();
     match layout.strip {
-        Strip::Off => blank_strip(target, layout.progress, pal),
+        Strip::Off => Ok(()),
         Strip::Stream => draw_stream_info(target, layout.progress, state, pal),
-        Strip::Progress => draw_progress_times(target, layout.progress, state, pal),
+        Strip::Progress => draw_seek_strip(target, layout.progress, state, pal, scrub),
     }
 }
 
@@ -1027,30 +1200,40 @@ fn fmt_clock(secs: u64) -> String {
     }
 }
 
-/// Elapsed on the left, total on the right, 6 px bar between — same
-/// thickness as the volume track, so the two slots are the same weight
-/// and the clocks say which is seek.
-fn draw_progress_times<D>(
+/// Seek strip: clocks, title-coloured fill, 4×12 knob. `scrub` overrides
+/// the live fraction while a finger is down.
+pub(crate) fn draw_seek_strip<D>(
     target: &mut D,
     slot: Rectangle,
     state: &PlayerState,
     pal: Palette,
+    scrub: Option<f32>,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    let Some(frac) = state.progress() else {
+    if slot.size.height == 0 {
+        return Ok(());
+    }
+    let frac = scrub.or_else(|| state.progress());
+    let Some(frac) = frac else {
         return blank_strip(target, slot, pal);
     };
-    let elapsed = state.seek.unwrap_or(0) / 1000;
     let total = state.duration.unwrap_or(0);
+    let elapsed = if let Some(s) = scrub {
+        (s.clamp(0.0, 1.0) * total as f32) as u64
+    } else {
+        state.seek.unwrap_or(0) / 1000
+    };
     let left = fmt_clock(elapsed);
     let right = fmt_clock(total);
     let char_w = META_FONT.character_size.width;
-    let side = left.chars().count().max(right.chars().count()).max(4) as u32 * char_w;
-    let gap = 2u32;
-    let inner_w = slot.size.width.saturating_sub(side * 2 + gap * 2);
-    let bar_h = 6u32.min(slot.size.height);
+    let clock_w = left.chars().count().max(right.chars().count()).max(4) as u32 * char_w;
+    let pad = 8u32;
+    let gap = 10u32;
+    let track_x = pad + clock_w + gap;
+    let inner_w = slot.size.width.saturating_sub(track_x * 2);
+    let bar_h = 6u32.min(slot.size.height.saturating_sub(4));
     let bar_y = (slot.size.height.saturating_sub(bar_h)) / 2;
 
     let mut buf = RowBuf::new(slot.size, pal.bg);
@@ -1064,10 +1247,11 @@ where
         .alignment(Alignment::Right)
         .build();
     let cy = slot.size.height as i32 / 2;
-    let _ = Text::with_text_style(&left, Point::new(0, cy), style, left_align).draw(&mut buf);
+    let _ =
+        Text::with_text_style(&left, Point::new(pad as i32, cy), style, left_align).draw(&mut buf);
     let _ = Text::with_text_style(
         &right,
-        Point::new(slot.size.width as i32, cy),
+        Point::new(slot.size.width as i32 - pad as i32, cy),
         style,
         right_align,
     )
@@ -1075,35 +1259,17 @@ where
 
     if inner_w > 0 {
         let track = Rectangle::new(
-            Point::new((side + gap) as i32, bar_y as i32),
+            Point::new(track_x as i32, bar_y as i32),
             Size::new(inner_w, bar_h),
         );
         let _ = fill_bar(&mut buf, track, frac, pal.dim, pal.title);
+        let kx = track.top_left.x + (track.size.width as f32 * frac.clamp(0.0, 1.0)) as i32;
+        let knob = Rectangle::new(Point::new(kx - 2, cy - 6), Size::new(4, 12));
+        let _ = knob
+            .into_styled(PrimitiveStyle::with_fill(pal.title))
+            .draw(&mut buf);
     }
     target.fill_contiguous(&slot, buf.px.iter().copied())
-}
-
-/// Repaint the volume slider only.
-pub fn draw_volume<D>(target: &mut D, layout: &Layout, state: &PlayerState) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let pal = layout.pal();
-    let slot = layout.volume;
-    slot.into_styled(PrimitiveStyle::with_fill(pal.bg))
-        .draw(target)?;
-
-    let muted = state.is_muted();
-    let volume = state.volume.unwrap_or(0);
-    draw_speaker(target, slot, muted || volume == 0, pal)?;
-
-    let frac = if muted {
-        0.0
-    } else {
-        f32::from(volume) / 100.0
-    };
-
-    fill_bar(target, volume_track(slot), frac, pal.dim, pal.accent)
 }
 
 /// Title-colour cabinet/cone/waves with level; danger cabinet/cone/cross when silent.
@@ -1113,89 +1279,6 @@ fn speaker_colour(muted: bool, volume: u8, pal: Palette) -> Rgb565 {
     } else {
         pal.title
     }
-}
-
-fn plot_icon_px<D>(
-    target: &mut D,
-    origin: Point,
-    pixels: &[(u8, u8)],
-    colour: Rgb565,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    for &(x, y) in pixels {
-        Pixel(
-            Point::new(origin.x + i32::from(x), origin.y + i32::from(y)),
-            colour,
-        )
-        .draw(target)?;
-    }
-    Ok(())
-}
-
-fn draw_speaker<D>(
-    target: &mut D,
-    slot: Rectangle,
-    silent: bool,
-    pal: Palette,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let colour = speaker_colour(silent, if silent { 0 } else { 1 }, pal);
-    let origin = Point::new(
-        slot.top_left.x,
-        slot.top_left.y + (slot.size.height as i32 - VOL_ICON_H as i32) / 2,
-    );
-    Rectangle::new(origin, Size::new(VOL_ICON_W, VOL_ICON_H))
-        .into_styled(PrimitiveStyle::with_fill(pal.bg))
-        .draw(target)?;
-    plot_icon_px(target, origin, SPEAKER_BODY, colour)?;
-    if silent {
-        plot_icon_px(target, origin, SPEAKER_MUTE_X, colour)?;
-    } else {
-        plot_icon_px(target, origin, SPEAKER_WAVES, colour)?;
-    }
-    Ok(())
-}
-
-/// Repaint the transport labels only.
-pub fn draw_transport<D>(
-    target: &mut D,
-    layout: &Layout,
-    state: &PlayerState,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let pal = layout.pal();
-    let strip = layout.transport;
-    strip
-        .into_styled(PrimitiveStyle::with_fill(pal.bg))
-        .draw(target)?;
-
-    let style = MonoTextStyle::new(TITLE_FONT, pal.title);
-    let centred = TextStyleBuilder::new()
-        .baseline(Baseline::Middle)
-        .alignment(Alignment::Center)
-        .build();
-
-    let third = strip.size.width as i32 / 3;
-    let y = strip.top_left.y + strip.size.height as i32 / 2;
-    let play = if state.is_playing() { "||" } else { ">" };
-
-    for (i, label) in ["|<", play, ">|"].iter().enumerate() {
-        Text::with_text_style(
-            label,
-            Point::new(strip.top_left.x + third * i as i32 + third / 2, y),
-            style,
-            centred,
-        )
-        .draw(target)?;
-    }
-
-    Ok(())
 }
 
 /// Draw a horizontal fill bar: trough, then the filled portion.
@@ -1231,97 +1314,90 @@ mod tests {
     }
 
     #[test]
-    fn default_portrait_matches_the_shipped_layout() {
+    fn portrait_matches_adr0020_a1() {
         let l = Layout::for_rotation(0);
-        assert_eq!(origin(l.art), (20, 8, 200, 200));
-        assert_eq!(origin(l.text), (4, 214, 232, 48));
-        assert_eq!(origin(l.volume), (10, 268, 220, 6));
-        assert_eq!(origin(l.progress), (10, 276, 220, 12));
-        assert_eq!(origin(l.transport), (0, 292, 240, 28));
-        assert_eq!(l.status_text, StatusText::Normal);
-        assert_eq!(l.strip, Strip::Progress);
+        assert_eq!(origin(l.art), (44, 0, 152, 152));
+        assert_eq!(origin(l.text), (12, 162, 216, 74));
+        assert_eq!(origin(l.info), (192, 0, 48, 48));
+        assert_eq!(origin(l.dock), (0, 236, 240, 52));
+        assert_eq!(origin(l.progress), (0, 288, 240, 32));
         assert_eq!(l.theme, Theme::Ink);
     }
 
     #[test]
-    fn default_landscape_matches_the_shipped_layout() {
+    fn landscape_matches_adr0020_a2() {
         let l = Layout::for_rotation(270);
-        assert_eq!(origin(l.art), (10, 4, 168, 168));
-        assert_eq!(origin(l.text), (184, 4, 132, 168));
-        assert_eq!(origin(l.volume), (10, 178, 300, 6));
-        assert_eq!(origin(l.progress), (10, 186, 300, 12));
-        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+        assert_eq!(origin(l.art), (0, 0, 200, 200));
+        assert_eq!(origin(l.info), (276, 0, 44, 44));
+        assert_eq!(origin(l.dock), (200, 156, 120, 44));
+        assert_eq!(origin(l.progress), (0, 200, 320, 40));
+        assert_eq!(origin(l.dock_cell(0)), (200, 156, 40, 44));
+        let a = l.dock_cell(0).center();
+        let b = l.dock_cell(1).center();
+        let c = l.dock_cell(2).center();
+        assert_eq!(b.x - a.x, c.x - b.x);
+        assert_eq!(a.y, b.y);
+        assert_eq!(b.y, c.y);
+        assert!(
+            l.dock_cell(0).size.width as i32 >= DOCK_GLYPH + 8,
+            "landscape cells must leave a gap around the glyph"
+        );
     }
 
     #[test]
-    fn tight_keeps_art_and_closes_the_bar_gap() {
-        let p = Layout::compose(
-            0,
-            BarGap::Tight,
-            StatusText::Normal,
-            Strip::Progress,
-            Theme::Ink,
+    fn pause_bars_share_the_ring_center() {
+        let c = Point::new(20, 22);
+        let ring = Circle::with_center(c, DOCK_GLYPH as u32);
+        let [a, b] = dock_pause_bars(c);
+        let right = b.top_left.x + b.size.width as i32;
+        let pair = Rectangle::new(
+            a.top_left,
+            Size::new((right - a.top_left.x) as u32, a.size.height),
         );
-        assert_eq!(origin(p.art), (20, 8, 200, 200));
-        assert_eq!(origin(p.volume), (10, 270, 220, 6));
-        assert_eq!(origin(p.progress), (10, 276, 220, 12));
-        assert_eq!(origin(p.transport), (0, 292, 240, 28));
-        let l = Layout::compose(
-            90,
-            BarGap::Tight,
-            StatusText::Normal,
-            Strip::Progress,
-            Theme::Ink,
-        );
-        assert_eq!(origin(l.art), (10, 4, 168, 168));
-        assert_eq!(origin(l.volume), (10, 178, 300, 6));
-        assert_eq!(origin(l.progress), (10, 184, 300, 12));
-        assert_eq!(origin(l.transport), (0, 200, 320, 40));
+        assert_eq!(pair.center(), ring.center());
+        assert_eq!(ring.center(), c);
+        assert_eq!(a.size, b.size);
+        assert_eq!(a.top_left.y, b.top_left.y);
     }
 
     #[test]
-    fn transport_does_not_move_when_the_gap_opens() {
-        for gap in [BarGap::Tight, BarGap::Default, BarGap::Roomy] {
-            for strip in [Strip::Progress, Strip::Stream, Strip::Off] {
-                let p = Layout::compose(0, gap, StatusText::Normal, strip, Theme::Ink);
-                assert_eq!(origin(p.transport), (0, 292, 240, 28));
-                let l = Layout::compose(90, gap, StatusText::Normal, strip, Theme::Ink);
-                assert_eq!(origin(l.transport), (0, 200, 320, 40));
+    fn landscape_title_starts_below_the_info_ring() {
+        let l = Layout::for_rotation(270);
+        let o = face_text_origin(&l);
+        assert_eq!(o.x, 210);
+        assert_eq!(o.y, 44);
+        let p = Layout::for_rotation(0);
+        assert_eq!(face_text_origin(&p), Point::new(22, 172));
+        assert_eq!(INFO_RING, 18);
+    }
+
+    #[test]
+    fn long_title_scrolls_the_block_vertically() {
+        let l = Layout::for_rotation(0);
+        let slot = face_text_slot(&l);
+        let mut pane = TextPane::default();
+        pane.set(
+            "A long title that must wrap more than twice so the block is taller than the slot",
+            "An artist name that also wraps on the portrait column",
+            "And an album title that adds a third field",
+            slot,
+        );
+        assert!(pane.over > 0);
+        let mut moved = false;
+        for _ in 0..(HOLD_TICKS as usize + 3) {
+            if pane.step() {
+                moved = true;
             }
         }
-    }
-
-    #[test]
-    fn roomy_portrait_opens_the_bar_gap_from_art() {
-        let l = Layout::compose(
-            0,
-            BarGap::Roomy,
-            StatusText::Normal,
-            Strip::Progress,
-            Theme::Ink,
+        assert!(moved);
+        assert!(pane.offset > 0);
+        pane.set(
+            "A long title that must wrap more than twice so the block is taller than the slot",
+            "An artist name that also wraps on the portrait column",
+            "And an album title that adds a third field",
+            slot,
         );
-        assert_eq!(origin(l.volume), (10, 260, 220, 6));
-        assert_eq!(origin(l.progress), (10, 276, 220, 12));
-        assert_eq!(l.art.size.height, 196);
-        let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
-        assert_eq!(between, 10);
-    }
-
-    #[test]
-    fn roomy_landscape_steals_from_art_not_transport() {
-        let l = Layout::compose(
-            90,
-            BarGap::Roomy,
-            StatusText::Normal,
-            Strip::Progress,
-            Theme::Ink,
-        );
-        assert_eq!(origin(l.art), (10, 4, 156, 156));
-        assert_eq!(origin(l.volume), (10, 168, 300, 6));
-        assert_eq!(origin(l.progress), (10, 184, 300, 12));
-        assert_eq!(origin(l.transport), (0, 200, 320, 40));
-        let between = l.progress.top_left.y - (l.volume.top_left.y + l.volume.size.height as i32);
-        assert_eq!(between, 10);
+        assert!(pane.offset > 0, "same strings must not restart the scroll");
     }
 
     #[test]
@@ -1348,40 +1424,14 @@ mod tests {
         };
         let l = Layout::from_config(&cfg);
         assert_eq!(l.status_text, StatusText::Large);
-        assert_eq!(l.art.size.width, 156);
+        assert_eq!(l.art.size.width, 200);
         assert_eq!(l.strip, Strip::Stream);
         assert_eq!(l.theme, Theme::Studio);
-        assert_eq!(origin(l.progress), (10, 184, 300, 12));
+        assert_eq!(origin(l.progress), (0, 200, 320, 40));
     }
 
     #[test]
-    fn stream_grows_the_slot_without_moving_neighbours() {
-        let p = Layout::compose(
-            0,
-            BarGap::Default,
-            StatusText::Normal,
-            Strip::Stream,
-            Theme::Ink,
-        );
-        assert_eq!(origin(p.art), (20, 8, 200, 200));
-        assert_eq!(origin(p.volume), (10, 268, 220, 6));
-        assert_eq!(origin(p.progress), (10, 276, 220, 12));
-        assert_eq!(origin(p.transport), (0, 292, 240, 28));
-        let l = Layout::compose(
-            90,
-            BarGap::Default,
-            StatusText::Normal,
-            Strip::Stream,
-            Theme::Ink,
-        );
-        assert_eq!(origin(l.art), (10, 4, 168, 168));
-        assert_eq!(origin(l.volume), (10, 178, 300, 6));
-        assert_eq!(origin(l.progress), (10, 186, 300, 12));
-        assert_eq!(origin(l.transport), (0, 200, 320, 40));
-    }
-
-    #[test]
-    fn off_keeps_the_progress_rect() {
+    fn off_hides_seek_and_grows_art() {
         let p = Layout::compose(
             0,
             BarGap::Default,
@@ -1389,8 +1439,30 @@ mod tests {
             Strip::Off,
             Theme::Ink,
         );
-        assert_eq!(origin(p.progress), (10, 280, 220, 4));
-        assert_eq!(origin(p.transport), (0, 292, 240, 28));
+        assert_eq!(p.art.size.height, 184);
+        assert_eq!(p.progress.size.height, 0);
+        assert_eq!(origin(p.dock), (0, 268, 240, 52));
+    }
+
+    #[test]
+    fn seek_fraction_pads_twelve_pixels() {
+        let slot = rect(0, 0, 240, 32);
+        assert_eq!(seek_fraction(slot, Point::new(12, 16)), 0.0);
+        assert_eq!(seek_fraction(slot, Point::new(228, 16)), 1.0);
+        let mid = seek_fraction(slot, Point::new(120, 16));
+        assert!((mid - 0.5).abs() < 0.02, "{mid}");
+    }
+
+    #[test]
+    fn face_hit_prefers_the_info_ring() {
+        let l = Layout::for_rotation(0);
+        assert_eq!(face_hit(&l, Point::new(200, 10)), Some(Hotspot::Info));
+        assert_eq!(face_hit(&l, Point::new(100, 40)), Some(Hotspot::Art));
+        assert_eq!(
+            face_hit(&l, Point::new(40, 250)),
+            Some(Hotspot::DockControls)
+        );
+        assert_eq!(face_hit(&l, Point::new(120, 300)), Some(Hotspot::Seek));
     }
 
     #[test]
@@ -1400,15 +1472,6 @@ mod tests {
         assert_eq!(fmt_clock(269), "4:29");
         assert_eq!(fmt_clock(3600), "1:00:00");
         assert_eq!(fmt_clock(3661), "1:01:01");
-    }
-
-    #[test]
-    fn volume_track_starts_after_the_speaker() {
-        let l = Layout::for_rotation(270);
-        let track = volume_track(l.volume);
-        assert_eq!(track.top_left.x, l.volume.top_left.x + 14);
-        assert_eq!(track.size.height, 6);
-        assert_eq!(track.size.width, 286);
     }
 
     #[test]
