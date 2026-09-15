@@ -1,5 +1,6 @@
-Unpublished `1.6.0` `armv7-unknown-linux-musleabihf` renderer
-(ADR-0020 Sitting S; not a GitHub release tag yet).
+Crate `1.6.0` `armv7-unknown-linux-musleabihf` renderer. Publish as
+`runtime-v1.6.0`. Until that tag exists, this file is the plugin payload
+only — not a GitHub Release asset.
 
     waveshare28-panel
     waveshare28-panel.sha256

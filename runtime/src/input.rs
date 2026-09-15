@@ -1,7 +1,7 @@
 //! Touch input, on its own thread.
 //!
 //! Edges must not be missed: the CST328 asserts IRQ for a few milliseconds.
-//! The GPIO character device queues falling edges. Sitting S needs press,
+//! The GPIO character device queues falling edges. The face needs press,
 //! move and release, so a lift that arrives as `Ok(None)` is an `Up`.
 
 use anyhow::{anyhow, Context, Result};

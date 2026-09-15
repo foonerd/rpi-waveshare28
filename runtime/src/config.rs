@@ -49,9 +49,8 @@ impl Default for StatusText {
     }
 }
 
-/// Named gap step. Sitting S compose ignores this: A.1 / A.2 redlines
-/// set the boxes. The key stays so `deny_unknown_fields` cannot smuggle
-/// a typo.
+/// Named gap step. Face compose ignores this: A.1 / A.2 set the boxes.
+/// The key stays so `deny_unknown_fields` cannot smuggle a typo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BarGap {
@@ -86,9 +85,9 @@ impl Default for Strip {
     }
 }
 
-/// Named colour set. Tokens, not a CSS engine. ADR-0020 Sitting T:
-/// `ink` is the shipped panel; `dusk`, `studio` and `night` are the
-/// table words. Live after `set`; no reboot.
+/// Named colour set. Tokens, not a CSS engine. ADR-0020: `ink` is the
+/// shipped panel; `dusk`, `studio` and `night` are the table words.
+/// Live after `set`; no reboot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
@@ -197,8 +196,8 @@ pub struct Config {
     /// How often to poll it, milliseconds.
     pub poll_interval_ms: u64,
     /// Minimum gap between two accepted press-downs, milliseconds.
-    /// Sitting S default is 50. Hold-to-repeat and seek-scrub live in
-    /// the main loop, not here.
+    /// Default is 50. Hold-to-repeat and seek-scrub live in the main
+    /// loop, not here.
     pub touch_debounce_ms: u64,
 }
 

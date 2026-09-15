@@ -49,13 +49,14 @@ for `volumio.service`. Without it the panel is dark for most of a minute, and
 the address is the one thing someone needs before the player is reachable.
 
 After `/status` is `ready` and the first `getState` succeeds, it shows the
-player: album art, a two-line title, artist/album, a dock (controls /
-volume / metadata) and a seek slot. The slot defaults to elapsed / bar /
-total when `getState` publishes a duration; a tap cycles to IN stream
-fields (`strip_portrait` / `strip_landscape`). Colours come from a named
-theme (`theme`; default `ink`; also `dusk`, `studio`, `night`). The `i`
-ring opens Status for ten seconds. Cover opens Artwork (or Metadata
-when there is no art). Dock cells open Controls, Volume and Metadata.
+player: album art, a two-line title (portrait is title only; landscape
+still paints artist and album), a dock (controls / volume / metadata)
+and a seek slot. The slot defaults to elapsed / bar / total when
+`getState` publishes a duration; a tap cycles to IN stream fields
+(`strip_portrait` / `strip_landscape`). Colours come from a named theme
+(`theme`; default `ink`; also `dusk`, `studio`, `night`). The IP ring
+opens Status for ten seconds. Cover opens Artwork (or Metadata when
+there is no art). Dock cells open Controls, Volume and Metadata.
 A failed poll during a Volumio restart is transient, and reverting to
 an address list mid-listening would be worse than a slightly stale
 player.

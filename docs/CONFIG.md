@@ -304,8 +304,9 @@ onto a Pi 5 cannot turn that board's HDMI off.
 
 ### `status_text_portrait` / `status_text_landscape`
 
-`normal` or `large`. Status screen only: hostname, addresses, and the
-startup footer. Player title and artist stay on the stock faces.
+`normal` or `large`. Boot overlay only: hostname, addresses, and the
+startup footer. The Status surface after the player is up always uses
+`FONT_10X20`. Player title stays on the stock faces.
 
 `large` is the biggest stock mono face (`FONT_10X20`). A literal 2× of
 the address face is 468 px for a 39-character IPv6 address, which does
@@ -320,8 +321,8 @@ and unit restart, no overlay rewrite, no reboot.
 ### `bar_gap_portrait` / `bar_gap_landscape`
 
 `tight`, `default` or `roomy`. Kept as a durable key so a typo is
-refused. Sitting S compose ignores it: the A.1 / A.2 redlines set the
-boxes. A bar-gap-only `set` is still live: toml and unit restart, no
+refused. Face compose ignores it: A.1 / A.2 set the face boxes.
+A bar-gap-only `set` is still live: toml and unit restart, no
 overlay rewrite, no reboot. The gap on glass does not move.
 
     sudo waveshare28-config set bar_gap_landscape=roomy
@@ -532,10 +533,9 @@ Renderer owns the bus, no splash on this panel:
 
     sudo waveshare28-config set rotation=270 backend=spi
 
-Larger status text, more space between the slider and the progress
-bar, and stream IN on a landscape mount:
+Larger boot-overlay type and stream IN on a landscape mount:
 
-    sudo waveshare28-config set status_text_landscape=large bar_gap_landscape=roomy strip_landscape=stream
+    sudo waveshare28-config set status_text_landscape=large strip_landscape=stream
     sudo waveshare28-config set theme=night
 
 After a kernel OTA that has dropped `fbcon=`:
@@ -554,7 +554,7 @@ plugin installer does not: enable (`onStart`) calls `apply`.
 `plugin/waveshare28` is store-shaped (`system_controller`, category
 `system_hardware`, armhf, Bookworm).
 `install.sh` copies `payload/waveshare28-config` and
-`payload/bin/armhf/waveshare28-panel` (runtime-v1.2.0 musleabihf) into
+`payload/bin/armhf/waveshare28-panel` (crate 1.6.0 musleabihf) into
 `/usr/local/bin` and writes sudoers. It does not run `apply` and does
 not start the panel unit. Enabling the plugin (`onStart`) runs `apply`.
 Disabling it (`onStop`) runs `recover`. Enabling with the tool missing

@@ -10,9 +10,10 @@
 //! presents. Touch coordinates arrive from the controller unrotated, so
 //! [`Layout::map`] is applied before hit testing.
 //!
-//! Sitting S (ADR-0020): resting face is display-only plus large hotspots.
+//! ADR-0020: resting face is display-only plus large hotspots.
 //! Type map, stock faces only: ~13/~11 bold → [`FONT_9X15_BOLD`]; ~9/~8/~7
-//! → [`FONT_6X10`]. Status IP uses [`FONT_10X20`] when status text is large.
+//! → [`FONT_6X10`]. The Status surface always uses [`FONT_10X20`]. The
+//! boot overlay uses that face when status text is large.
 
 use embedded_graphics::{
     mono_font::{
@@ -157,7 +158,7 @@ pub struct Layout {
     pub art: Rectangle,
     /// Title block (portrait: title only). Tap opens metadata.
     pub text: Rectangle,
-    /// `i` ring hit target.
+    /// IP ring hit target.
     pub info: Rectangle,
     /// Three-slot glyph dock.
     pub dock: Rectangle,
@@ -269,7 +270,7 @@ impl Layout {
         strip: Strip,
         theme: Theme,
     ) -> Self {
-        // Sitting S redlines supersede bar-gap geometry. The key stays.
+        // A.1 / A.2 boxes supersede bar-gap geometry. The key stays.
         match rotation {
             90 | 270 => Self::landscape(rotation, status_text, strip, theme),
             _ => Self::portrait(rotation, status_text, strip, theme),
@@ -881,12 +882,20 @@ fn is_portrait(layout: &Layout) -> bool {
 }
 
 fn info_ring_center(layout: &Layout) -> Point {
-    let origin = if is_portrait(layout) {
+    Circle::new(info_ring_origin(layout), INFO_RING).center()
+}
+
+/// Top-left of the ø18 IP paint box. Surfaces put the hold countdown here.
+pub(crate) fn info_ring_origin(layout: &Layout) -> Point {
+    if is_portrait(layout) {
         INFO_RING_PORTRAIT
     } else {
         INFO_RING_LANDSCAPE
-    };
-    Circle::new(origin, INFO_RING).center()
+    }
+}
+
+pub(crate) fn info_ring_box(layout: &Layout) -> Rectangle {
+    Rectangle::new(info_ring_origin(layout), Size::new(INFO_RING, INFO_RING))
 }
 
 /// Top-left of the title block. Portrait is A.1. Landscape starts under
@@ -1003,7 +1012,7 @@ where
     Ok(())
 }
 
-/// Speaker and list optical box. Play uses the same cell, no hoop.
+/// Speaker and list optical box. Play uses the same cell.
 const DOCK_GLYPH: i32 = 22;
 
 fn dock_glyph_center(cell: Rectangle) -> Point {
@@ -1035,7 +1044,7 @@ fn dock_play_triangle(center: Point) -> Triangle {
     )
 }
 
-/// Bare triangle / bars. No hoop, no disc — same language as speaker and list.
+/// Play triangle or pause bars, same language as speaker and list.
 fn draw_dock_transport<D>(
     target: &mut D,
     cell: Rectangle,

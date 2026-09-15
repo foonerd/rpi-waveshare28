@@ -1,4 +1,4 @@
-//! Transient surfaces (ADR-0020 Sitting S).
+//! Transient surfaces (ADR-0020).
 //!
 //! One surface at a time. Close on 10 s inactivity or an outside tap.
 //! Token map is the same as the face: accent is volume fill only.
@@ -16,12 +16,15 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
+use std::time::Duration;
+
 use crate::art::Art;
 use crate::net::HostInfo;
 use crate::state::PlayerState;
 use crate::ui::{self, Layout, Palette, META_FONT, TITLE_FONT};
 
-const SURFACE_HOLD: u64 = 10;
+/// Face hold. Painted as a countdown in the IP box.
+pub(crate) const HOLD_SECS: u8 = 10;
 /// Biggest stock mono face. Status + metadata only; IPv6 wraps.
 const SURF_FONT: &MonoFont = &FONT_10X20;
 const SURF_LINE_PAD: i32 = 2;
@@ -223,17 +226,33 @@ where
         style,
     )
     .draw(target)?;
-    let right = TextStyleBuilder::new()
-        .baseline(Baseline::Top)
-        .alignment(Alignment::Right)
+    Ok(())
+}
+
+/// Ceil remaining hold into 0..=10. `10.0` is 10; `9.1` is still 10.
+pub(crate) fn hold_secs(left: Duration) -> u8 {
+    let ceil = left
+        .as_secs()
+        .saturating_add(u64::from(left.subsec_nanos() > 0));
+    ceil.min(u64::from(HOLD_SECS)) as u8
+}
+
+/// `{n}s` in the IP box so the clock stays off the body.
+pub fn draw_hold<D>(target: &mut D, layout: &Layout, remain: u8) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let pal = layout.pal();
+    let box_ = ui::info_ring_box(layout);
+    box_.into_styled(PrimitiveStyle::with_fill(pal.bg))
+        .draw(target)?;
+    let style = MonoTextStyle::new(META_FONT, pal.dim);
+    let centred = TextStyleBuilder::new()
+        .baseline(Baseline::Middle)
+        .alignment(Alignment::Center)
         .build();
-    Text::with_text_style(
-        &format!("{SURFACE_HOLD} s"),
-        Point::new(h.top_left.x + h.size.width as i32 - 12, h.top_left.y + 8),
-        style,
-        right,
-    )
-    .draw(target)?;
+    let label = format!("{remain}s");
+    Text::with_text_style(&label, box_.center(), style, centred).draw(target)?;
     Ok(())
 }
 
@@ -465,7 +484,7 @@ where
     let pal = layout.pal();
     target.clear(pal.bg)?;
     if surface == Surface::Artwork {
-        return draw_artwork(target, layout, art, pal);
+        return draw_artwork(target, layout, art);
     }
     draw_header(target, layout, pal, surface.label())?;
     match surface {
@@ -512,12 +531,7 @@ fn scale_nearest(art: &Art, dw: u32, dh: u32) -> Vec<Rgb565> {
     out
 }
 
-fn draw_artwork<D>(
-    target: &mut D,
-    layout: &Layout,
-    art: Option<&Art>,
-    pal: Palette,
-) -> Result<(), D::Error>
+fn draw_artwork<D>(target: &mut D, layout: &Layout, art: Option<&Art>) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -529,16 +543,6 @@ where
             target.fill_contiguous(&placed, px.into_iter())?;
         }
     }
-    let style = MonoTextStyle::new(META_FONT, pal.dim);
-    Text::new(
-        "tap · 10 s",
-        Point::new(
-            frame.top_left.x + frame.size.width as i32 - 80,
-            frame.top_left.y + frame.size.height as i32 - 16,
-        ),
-        style,
-    )
-    .draw(target)?;
     Ok(())
 }
 
@@ -850,6 +854,23 @@ mod tests {
         assert_eq!(out[3], art.px[1]);
         assert_eq!(out[12], art.px[2]);
         assert_eq!(out[15], art.px[3]);
+    }
+
+    #[test]
+    fn hold_secs_ceils_the_remaining_second() {
+        assert_eq!(hold_secs(Duration::from_secs(10)), 10);
+        assert_eq!(hold_secs(Duration::from_millis(9900)), 10);
+        assert_eq!(hold_secs(Duration::from_secs(9)), 9);
+        assert_eq!(hold_secs(Duration::from_millis(1)), 1);
+        assert_eq!(hold_secs(Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn hold_clock_sits_on_the_ip_box() {
+        let p = Layout::for_rotation(0);
+        let l = Layout::for_rotation(270);
+        assert_eq!(origin(crate::ui::info_ring_box(&p)), (220, 2, 18, 18));
+        assert_eq!(origin(crate::ui::info_ring_box(&l)), (300, 2, 18, 18));
     }
 
     #[test]

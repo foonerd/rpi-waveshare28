@@ -19,7 +19,7 @@ these keys on a **UI** section, separate from Panel (rotation, bus).
 | `bg` | ground, letterbox, IP-ring backing |
 | `title` | track title, play/pause, seek fill + knob, volume +/− and readout, unmuted speaker, mode ON, status IP |
 | `meta` | artist, clocks, skips, list + speaker dock, IP ring, stream/status facts |
-| `dim` | album, troughs, hairlines, headers, "10 s", mode OFF, version line |
+| `dim` | album, troughs, hairlines, headers, hold countdown, mode OFF, version line |
 | `accent` | volume fill only |
 | `danger` | speaker + cross when muted or volume 0 |
 
@@ -59,7 +59,7 @@ Hairlines are 1 px in `dim`.
 | portrait title block | 40 | 2 × 15 + gap + pad |
 | dock pad | 15 | divider → glyph **and** glyph → seek band |
 | dock cell | 80×52 / 40×44 | portrait / landscape |
-| dock glyph | 22 | speaker is the signed-off 12×10 at 2× |
+| dock glyph | 22 | speaker is the signed-off 12×10 at 2×; play is a triangle or two bars |
 | seek strip | 32 / 40 | portrait / landscape; whole strip is the hit |
 | seek chrome | top of strip | portrait face only — so the trough is not a second gap |
 | IP ring | ø18 | 2 px in from the top-right: portrait `(220, 2)`, landscape `(300, 2)` |
@@ -94,7 +94,9 @@ IP hit). Dock 200, 156, 120, 44 (cells 40×44). Seek 0, 200, 320, 40.
 
 ## Surfaces
 
-One at a time. Close on 10 s or an outside tap.
+One at a time. Close on 10 s or an outside tap. The remaining seconds
+(`10s` … `1s`) sit in the IP box so the clock is off the body. Artwork
+has no footer line.
 
 | tap | opens |
 |---|---|

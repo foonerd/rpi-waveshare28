@@ -125,6 +125,7 @@ fn run(cfg: Config) -> Result<()> {
     let mut strip_view = cfg.strip();
     let mut last_step = Instant::now();
     let mut pane = TextPane::default();
+    let mut hold_shown: Option<u8> = None;
 
     loop {
         if !player {
@@ -216,7 +217,10 @@ fn run(cfg: Config) -> Result<()> {
             surface_until = None;
             scrub = None;
             shown = None;
+            hold_shown = None;
         }
+        let hold_left = surface_until
+            .map(|until| surface::hold_secs(until.saturating_duration_since(Instant::now())));
 
         if panel.layout().strip != strip_view {
             panel.set_strip(strip_view);
@@ -259,13 +263,28 @@ fn run(cfg: Config) -> Result<()> {
                         _ => {}
                     }
                 }
+                if open.is_some() && hold_left != hold_shown {
+                    if let Some(left) = hold_left {
+                        panel.render_hold(left)?;
+                    }
+                    hold_shown = hold_left;
+                }
                 shown = Some(current.clone());
             }
             _ => {
                 if let Some(kind) = open {
-                    panel.render_surface(kind, &current, art.as_ref(), &host, scrub)?;
+                    panel.render_surface(
+                        kind,
+                        &current,
+                        art.as_ref(),
+                        &host,
+                        scrub,
+                        hold_left.unwrap_or(surface::HOLD_SECS),
+                    )?;
+                    hold_shown = hold_left;
                 } else {
                     panel.render(&current, art.as_ref(), &pane, scrub)?;
+                    hold_shown = None;
                 }
                 shown = Some(current.clone());
             }

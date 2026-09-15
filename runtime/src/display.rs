@@ -122,7 +122,7 @@ impl Panel {
         &self.layout
     }
 
-    /// Sitting S: in-RAM strip cycle. Restart still uses the config key.
+    /// In-RAM strip cycle. Restart still uses the config key.
     pub fn set_strip(&mut self, strip: Strip) {
         self.layout.strip = strip;
     }
@@ -189,16 +189,17 @@ impl Panel {
         art: Option<&Art>,
         host: &HostInfo,
         scrub: Option<f32>,
+        remain: u8,
     ) -> Result<()> {
-        on_surface!(self, |s| surface::draw(
-            s,
-            &self.layout,
-            kind,
-            state,
-            art,
-            host,
-            scrub
-        ))
+        on_surface!(self, |s| {
+            surface::draw(s, &self.layout, kind, state, art, host, scrub)?;
+            surface::draw_hold(s, &self.layout, remain)
+        })
+    }
+
+    /// Repaint the hold countdown only. Do not clear the surface.
+    pub fn render_hold(&mut self, remain: u8) -> Result<()> {
+        on_surface!(self, |s| surface::draw_hold(s, &self.layout, remain))
     }
 }
 
