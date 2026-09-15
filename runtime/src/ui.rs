@@ -1001,22 +1001,19 @@ where
     Ok(())
 }
 
-/// One optical box for play, speaker and list. 22 is the A.1 glyph
-/// (~22 in an 80×52 cell). Landscape cells are 40 px: 36 filled them
-/// and left no gap.
+/// Speaker and list optical box. Play uses the same cell, no hoop.
 const DOCK_GLYPH: i32 = 22;
 
 fn dock_glyph_center(cell: Rectangle) -> Point {
     cell.center()
 }
 
-/// Two bars as one box centered on `center`. The old pair used
-/// `c.x - (w + 2)` and `c.x + 2`, so `center()` was one pixel left
-/// of the ring (`Circle::with_center` / `Rectangle::with_center`).
+/// Two bars as one box centered on `center`. Same `with_center` as the
+/// speaker, so the pair does not sit a pixel left of the cell.
 fn dock_pause_bars(center: Point) -> [Rectangle; 2] {
-    let w = 3.max(DOCK_GLYPH / 10);
+    let w = 5;
     let gap = 4;
-    let h = (DOCK_GLYPH * 12 / 28).max(1);
+    let h = 16;
     let pair = Rectangle::with_center(center, Size::new((2 * w + gap) as u32, h as u32));
     let left = pair.top_left;
     [
@@ -1028,7 +1025,15 @@ fn dock_pause_bars(center: Point) -> [Rectangle; 2] {
     ]
 }
 
-/// Ringed play / pause. Circle + mark, same language as the reference dock.
+fn dock_play_triangle(center: Point) -> Triangle {
+    Triangle::new(
+        Point::new(center.x - 5, center.y - 9),
+        Point::new(center.x - 5, center.y + 9),
+        Point::new(center.x + 10, center.y),
+    )
+}
+
+/// Bare triangle / bars. No hoop, no disc — same language as speaker and list.
 fn draw_dock_transport<D>(
     target: &mut D,
     cell: Rectangle,
@@ -1039,24 +1044,15 @@ where
     D: DrawTarget<Color = Rgb565>,
 {
     let c = dock_glyph_center(cell);
-    let d = DOCK_GLYPH as u32;
-    Circle::with_center(c, d)
-        .into_styled(PrimitiveStyle::with_stroke(pal.title, 2))
-        .draw(target)?;
     if playing {
         for bar in dock_pause_bars(c) {
             bar.into_styled(PrimitiveStyle::with_fill(pal.title))
                 .draw(target)?;
         }
     } else {
-        let r = DOCK_GLYPH / 2;
-        Triangle::new(
-            Point::new(c.x - r * 5 / 14, c.y - r * 7 / 14),
-            Point::new(c.x - r * 5 / 14, c.y + r * 7 / 14),
-            Point::new(c.x + r * 7 / 14, c.y),
-        )
-        .into_styled(PrimitiveStyle::with_fill(pal.title))
-        .draw(target)?;
+        dock_play_triangle(c)
+            .into_styled(PrimitiveStyle::with_fill(pal.title))
+            .draw(target)?;
     }
     Ok(())
 }
@@ -1386,7 +1382,7 @@ mod tests {
     #[test]
     fn portrait_icon_to_seek_matches_divider_to_icon() {
         let l = Layout::for_rotation(0);
-        let ring = Circle::with_center(dock_glyph_center(l.dock_cell(0)), DOCK_GLYPH as u32);
+        let ring = Circle::with_center(dock_glyph_center(l.dock_cell(2)), DOCK_GLYPH as u32);
         let from_divider = ring.top_left.y - l.dock.top_left.y;
         let to_seek = l.progress.top_left.y - (ring.top_left.y + DOCK_GLYPH);
         assert_eq!(from_divider, to_seek);
@@ -1415,17 +1411,15 @@ mod tests {
     }
 
     #[test]
-    fn pause_bars_share_the_ring_center() {
+    fn pause_bars_share_the_cell_center() {
         let c = Point::new(20, 22);
-        let ring = Circle::with_center(c, DOCK_GLYPH as u32);
         let [a, b] = dock_pause_bars(c);
         let right = b.top_left.x + b.size.width as i32;
         let pair = Rectangle::new(
             a.top_left,
             Size::new((right - a.top_left.x) as u32, a.size.height),
         );
-        assert_eq!(pair.center(), ring.center());
-        assert_eq!(ring.center(), c);
+        assert_eq!(pair.center(), c);
         assert_eq!(a.size, b.size);
         assert_eq!(a.top_left.y, b.top_left.y);
     }
