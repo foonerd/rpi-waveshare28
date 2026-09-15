@@ -833,7 +833,7 @@ where
 {
     // Hit stays 48×48 / 44×44. Paint only the ring: a full-hit fill is a
     // 48 px slab on the cover. Hairline + dim — not meta, not 2 px.
-    let c = layout.info.center();
+    let c = info_ring_center(layout);
     Circle::with_center(c, INFO_RING + 2)
         .into_styled(PrimitiveStyle::with_fill(pal.bg))
         .draw(target)?;
@@ -851,35 +851,49 @@ where
 
 /// A.1 / A.2 status ring. Hit stays 48×48 / 44×44.
 const INFO_RING: u32 = 18;
+/// A.1: ring ø18 top-left. Hit is the larger 48×48.
+const INFO_RING_PORTRAIT: Point = Point::new(214, 8);
 
-/// Inset from the art box and the column edges. A.2 called this pad 10;
-/// without it landscape title sits on the art's right edge.
+/// Inset from the art column. A.2 pad 10. Portrait A.1 already starts
+/// at x 12, y 162 — do not add this again.
 const FACE_TEXT_PAD: i32 = 10;
 
-/// Top-left of the title block. Landscape's IP ring sits in the same
-/// column; the first line starts under that hit. Always inset from art.
+fn is_portrait(layout: &Layout) -> bool {
+    layout.frame.size.height > layout.frame.size.width
+}
+
+fn info_ring_center(layout: &Layout) -> Point {
+    if is_portrait(layout) {
+        Circle::new(INFO_RING_PORTRAIT, INFO_RING).center()
+    } else {
+        layout.info.center()
+    }
+}
+
+/// Top-left of the title block. Portrait is A.1. Landscape starts under
+/// the IP hit and insets from the art's right edge.
 fn face_text_origin(layout: &Layout) -> Point {
     let region = layout.text;
-    let overlap = layout.info.intersection(&region);
-    let under_info = overlap.size.width > 0 && layout.info.top_left.y <= region.top_left.y + 4;
-    let y = if under_info {
-        layout.info.top_left.y + layout.info.size.height as i32
-    } else {
-        region.top_left.y + FACE_TEXT_PAD
-    };
+    if is_portrait(layout) {
+        return region.top_left;
+    }
+    let y = layout.info.top_left.y + layout.info.size.height as i32;
     Point::new(region.top_left.x + FACE_TEXT_PAD, y)
 }
 
 fn face_text_width(layout: &Layout) -> u32 {
-    layout
-        .text
-        .size
-        .width
-        .saturating_sub((FACE_TEXT_PAD * 2) as u32)
+    if is_portrait(layout) {
+        layout.text.size.width
+    } else {
+        layout
+            .text
+            .size
+            .width
+            .saturating_sub((FACE_TEXT_PAD * 2) as u32)
+    }
 }
 
-/// Clip box for title / artist / album. Starts under the IP hit on
-/// landscape; inset from art on both orientations.
+/// Clip box for title / artist / album.
 pub fn face_text_slot(layout: &Layout) -> Rectangle {
     let origin = face_text_origin(layout);
     let bottom = layout.text.top_left.y + layout.text.size.height as i32;
@@ -1367,8 +1381,13 @@ mod tests {
         assert_eq!(o.x, 210);
         assert_eq!(o.y, 44);
         let p = Layout::for_rotation(0);
-        assert_eq!(face_text_origin(&p), Point::new(22, 172));
+        assert_eq!(face_text_origin(&p), Point::new(12, 162));
+        assert_eq!(origin(face_text_slot(&p)), (12, 162, 216, 74));
         assert_eq!(INFO_RING, 18);
+        assert_eq!(
+            info_ring_center(&p),
+            Circle::new(INFO_RING_PORTRAIT, INFO_RING).center()
+        );
     }
 
     #[test]
