@@ -1,6 +1,6 @@
 {
   "name": "waveshare28",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Settings for the Waveshare 2.8 inch SPI touch panel (SKU 27579). Installs the panel program and waveshare28-config from this plugin's payload. Shows only the controls that apply to this Raspberry Pi.",
   "main": "index.js",
   "scripts": {
@@ -13,7 +13,7 @@
     "icon": "fa-desktop",
     "plugin_type": "system_controller",
     "details": "Waveshare 2.8 inch SPI touch panel for Volumio. The plugin installs its own panel program (armhf) and settings tool, then shows only the controls for this board. Panel: rotation, SPI speed, and backend. Console appears only for the framebuffer backend. HDMI appears only on a Pi 4 with framebuffer. A Pi 3A+ shows a read-only KMS line; other boards do not. UI: theme, boot address text, and the track strip. Cover art is not recoloured. Bar spacing is stored and does not move the player layout. Enable applies the setup. Disable removes the live screen setup and keeps /boot/waveshare28.conf. Does not edit volumioconfig.txt. Pi 1 and the original Pi Zero are not supported.",
-    "changelog": "1.0.1: Portrait credits scroll in the title slot. Stream text uses the larger face. After a cover miss the box says Retrieving artwork. Guides name the PIXIS CB-1.",
+    "changelog": "1.0.2: Settings page and its messages follow Volumio's language for German, French, Spanish, Dutch, Italian, Polish, and Portuguese. English remains the fallback. The panel glass is unchanged.",
     "categories": [
       "system_hardware"
     ],
