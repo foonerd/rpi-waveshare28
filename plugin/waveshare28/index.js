@@ -165,17 +165,15 @@ Waveshare28.prototype.onStart = function () {
     self.board = JSON.parse(self.runTool(['detect']));
   } catch (e) {
     self.logger.error('[waveshare28] start failed: ' + e);
-    self.commandRouter.pushToastMessage('error', 'Waveshare 2.8', String(e.message || e));
+    self.commandRouter.pushToastMessage('error', self.pluginText('TOAST_TITLE'), String(e.message || e));
     defer.reject(e);
     return defer.promise;
   }
 
   if (!self.board.supported) {
-    const why = self.board.reason === 'armv6'
-      ? 'This board is armv6 (Pi 1 / original Pi Zero) and is not supported.'
-      : 'This plugin requires a Raspberry Pi (armv7 or later).';
+    const why = self.pluginText(self.board.reason === 'armv6' ? 'TOAST_ARMV6' : 'TOAST_NOT_PI');
     self.logger.error('[waveshare28] unsupported board: ' + self.board.reason);
-    self.commandRouter.pushToastMessage('error', 'Waveshare 2.8', why);
+    self.commandRouter.pushToastMessage('error', self.pluginText('TOAST_TITLE'), why);
     defer.reject(new Error('Unsupported board: ' + self.board.reason));
     return defer.promise;
   }
@@ -193,7 +191,7 @@ Waveshare28.prototype.onStart = function () {
     }
   } catch (e) {
     self.logger.error('[waveshare28] apply on start failed: ' + e);
-    self.commandRouter.pushToastMessage('error', 'Waveshare 2.8', 'Failed to start the panel.');
+    self.toast('error', 'TOAST_START_FAILED');
     defer.reject(e);
     return defer.promise;
   }
@@ -262,7 +260,7 @@ Waveshare28.prototype.getUIConfig = function () {
       }
       setField(status, 'panel_live', function (item) {
         if (state.reboot_required) {
-          item.value = 'Reboot required (not on this boot)';
+          item.value = self.pluginText('PANEL_REBOOT_REQUIRED');
         } else if (state.device) {
           item.value = String(state.device);
         } else {
@@ -312,7 +310,7 @@ Waveshare28.prototype.getUIConfig = function () {
       }
 
       const backups = self.listSettingsBackups();
-      const none = { value: '', label: 'No settings backups yet' };
+      const none = { value: '', label: self.pluginText('BACKUP_NONE_YET') };
       uiconf.sections.forEach(function (section) {
         if (!section.content) {
           return;
@@ -400,15 +398,40 @@ Waveshare28.prototype.saveSettings = function (data) {
     }
     self.runTool(['set'].concat(args));
     const after = JSON.parse(self.runTool(['show', '--json']));
-    self.afterSetMaybeReboot(before, after, 'Settings applied.');
+    self.afterSetMaybeReboot(before, after, self.pluginText('TOAST_APPLIED'));
     defer.resolve();
   } catch (e) {
     self.logger.error('[waveshare28] set failed: ' + e);
-    self.commandRouter.pushToastMessage('error', 'Waveshare 2.8', 'Failed to apply settings.');
+    self.toast('error', 'TOAST_APPLY_FAILED');
     defer.reject(e);
   }
   return defer.promise;
 };
+
+Waveshare28.prototype.pluginText = function (key) {
+  const lang = this.commandRouter.sharedVars.get('language_code');
+  const dir = path.join(__dirname, 'i18n');
+  const en = readStrings(path.join(dir, 'strings_en.json'));
+  const local = lang && lang !== 'en'
+    ? readStrings(path.join(dir, 'strings_' + lang + '.json'))
+    : null;
+  if (local && local[key]) {
+    return local[key];
+  }
+  return (en && en[key]) || key;
+};
+
+Waveshare28.prototype.toast = function (level, key) {
+  this.commandRouter.pushToastMessage(level, this.pluginText('TOAST_TITLE'), this.pluginText(key));
+};
+
+function readStrings(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e) {
+    return null;
+  }
+}
 
 Waveshare28.prototype.coreI18n = function (key, fallback) {
   try {
@@ -438,7 +461,7 @@ Waveshare28.prototype.afterSetMaybeReboot = function (before, after, okToast) {
     this.initRebootCountdown();
     return;
   }
-  this.commandRouter.pushToastMessage('success', 'Waveshare 2.8', okToast);
+  this.commandRouter.pushToastMessage('success', this.pluginText('TOAST_TITLE'), okToast);
 };
 
 Waveshare28.prototype.needsReboot = function (before, after) {
@@ -468,8 +491,8 @@ Waveshare28.prototype.needsReboot = function (before, after) {
 
 Waveshare28.prototype.showRebootModal = function (seconds) {
   this.commandRouter.broadcastMessage('openModal', {
-    title: 'Waveshare 2.8',
-    message: 'Settings saved. A reboot is required for the firmware overlay. Your device will restart in ' + seconds + ' seconds.',
+    title: this.pluginText('TOAST_TITLE'),
+    message: this.pluginText('TOAST_REBOOT').replace('{seconds}', String(seconds)),
     size: 'lg',
     buttons: [
       {
@@ -545,11 +568,7 @@ Waveshare28.prototype.cancelReboot = function () {
   if (typeof this.commandRouter.closeModals === 'function') {
     this.commandRouter.closeModals();
   }
-  this.commandRouter.pushToastMessage(
-    'info',
-    'Waveshare 2.8',
-    'Reboot cancelled. Settings are already saved; reboot when you can.'
-  );
+  this.toast('info', 'TOAST_REBOOT_CANCELLED');
   return this.updateUIConfig();
 };
 
@@ -615,24 +634,24 @@ Waveshare28.prototype.settingsBackupSnapshot = function () {
 
 Waveshare28.prototype.validateBackupValues = function (values) {
   if (!values || typeof values !== 'object') {
-    return { ok: false, message: 'That settings backup has no values.' };
+    return { ok: false, key: 'BACKUP_NO_VALUES' };
   }
   const rotation = parseInt(values.rotation, 10);
   if ([0, 90, 180, 270].indexOf(rotation) === -1) {
-    return { ok: false, message: 'That settings backup has an invalid rotation.' };
+    return { ok: false, key: 'BACKUP_BAD_ROTATION' };
   }
   const speed = parseInt(values.speed, 10);
   if (!Number.isFinite(speed) || speed <= 0) {
-    return { ok: false, message: 'That settings backup has an invalid speed.' };
+    return { ok: false, key: 'BACKUP_BAD_SPEED' };
   }
   if (values.backend !== 'spi' && values.backend !== 'framebuffer') {
-    return { ok: false, message: 'That settings backup has an invalid backend.' };
+    return { ok: false, key: 'BACKUP_BAD_BACKEND' };
   }
   if (values.console !== 'share' && values.console !== 'release') {
-    return { ok: false, message: 'That settings backup has an invalid console.' };
+    return { ok: false, key: 'BACKUP_BAD_CONSOLE' };
   }
   if (values.hdmi !== 'on' && values.hdmi !== 'off') {
-    return { ok: false, message: 'That settings backup has an invalid hdmi.' };
+    return { ok: false, key: 'BACKUP_BAD_HDMI' };
   }
   // Schema 1 backups written before these keys restore as the shipped defaults.
   const statusPortrait = values.status_text_portrait == null || values.status_text_portrait === ''
@@ -657,25 +676,25 @@ Waveshare28.prototype.validateBackupValues = function (values) {
     ? 'ink'
     : values.theme;
   if (statusPortrait !== 'normal' && statusPortrait !== 'large') {
-    return { ok: false, message: 'That settings backup has an invalid status_text_portrait.' };
+    return { ok: false, key: 'BACKUP_BAD_STATUS_TEXT_PORTRAIT' };
   }
   if (statusLandscape !== 'normal' && statusLandscape !== 'large') {
-    return { ok: false, message: 'That settings backup has an invalid status_text_landscape.' };
+    return { ok: false, key: 'BACKUP_BAD_STATUS_TEXT_LANDSCAPE' };
   }
   if (barGapPortrait !== 'tight' && barGapPortrait !== 'default' && barGapPortrait !== 'roomy') {
-    return { ok: false, message: 'That settings backup has an invalid bar_gap_portrait.' };
+    return { ok: false, key: 'BACKUP_BAD_BAR_GAP_PORTRAIT' };
   }
   if (barGapLandscape !== 'tight' && barGapLandscape !== 'default' && barGapLandscape !== 'roomy') {
-    return { ok: false, message: 'That settings backup has an invalid bar_gap_landscape.' };
+    return { ok: false, key: 'BACKUP_BAD_BAR_GAP_LANDSCAPE' };
   }
   if (stripPortrait !== 'progress' && stripPortrait !== 'stream' && stripPortrait !== 'off') {
-    return { ok: false, message: 'That settings backup has an invalid strip_portrait.' };
+    return { ok: false, key: 'BACKUP_BAD_STRIP_PORTRAIT' };
   }
   if (stripLandscape !== 'progress' && stripLandscape !== 'stream' && stripLandscape !== 'off') {
-    return { ok: false, message: 'That settings backup has an invalid strip_landscape.' };
+    return { ok: false, key: 'BACKUP_BAD_STRIP_LANDSCAPE' };
   }
   if (theme !== 'ink' && theme !== 'dusk' && theme !== 'studio' && theme !== 'night') {
-    return { ok: false, message: 'That settings backup has an invalid theme.' };
+    return { ok: false, key: 'BACKUP_BAD_THEME' };
   }
   return {
     ok: true,
@@ -699,23 +718,23 @@ Waveshare28.prototype.validateBackupValues = function (values) {
 Waveshare28.prototype.readSettingsBackup = function (name) {
   const safe = this.sanitizeBackupName(name);
   if (!safe) {
-    return { ok: false, message: 'Choose a settings backup.' };
+    return { ok: false, key: 'BACKUP_CHOOSE' };
   }
   let raw;
   try {
     raw = fs.readFileSync(this.settingsBackupPath(safe), 'utf8');
   } catch (e) {
-    return { ok: false, message: 'That settings backup is not on this device.' };
+    return { ok: false, key: 'BACKUP_MISSING' };
   }
   let snap;
   try {
     snap = JSON.parse(raw);
   } catch (e) {
-    return { ok: false, message: 'That settings backup is not valid JSON.' };
+    return { ok: false, key: 'BACKUP_BAD_JSON' };
   }
   if (!snap || snap.schema_version !== SETTINGS_BACKUP_SCHEMA ||
       !snap.values || typeof snap.values !== 'object') {
-    return { ok: false, message: 'That settings backup is not a schema 1 snapshot.' };
+    return { ok: false, key: 'BACKUP_BAD_SCHEMA' };
   }
   return { ok: true, name: safe, snapshot: snap };
 };
@@ -752,11 +771,7 @@ Waveshare28.prototype.listSettingsBackups = function () {
 Waveshare28.prototype.createSettingsBackup = function (data) {
   const name = this.sanitizeBackupName(data && data.backup_name);
   if (!name) {
-    this.commandRouter.pushToastMessage(
-      'error',
-      'Waveshare 2.8',
-      'Backup name must be 1–64 letters, numbers, spaces, dots, underscores or hyphens.'
-    );
+    this.toast('error', 'TOAST_BACKUP_NAME');
     return libQ.resolve();
   }
   try {
@@ -766,10 +781,10 @@ Waveshare28.prototype.createSettingsBackup = function (data) {
     fs.writeFileSync(this.settingsBackupPath(name), JSON.stringify(snap, null, 2) + '\n', { mode: 0o640 });
   } catch (e) {
     this.logger.error('[waveshare28] settings backup failed: ' + e);
-    this.commandRouter.pushToastMessage('error', 'Waveshare 2.8', 'Could not write the settings backup.');
+    this.toast('error', 'TOAST_BACKUP_WRITE');
     return libQ.resolve();
   }
-  this.commandRouter.pushToastMessage('success', 'Waveshare 2.8', 'Settings backup saved.');
+  this.toast('success', 'TOAST_BACKUP_SAVED');
   return this.updateUIConfig();
 };
 
@@ -777,13 +792,13 @@ Waveshare28.prototype.restoreSettingsBackup = function (data) {
   const name = fieldValue(data || {}, 'selected_backup');
   const read = this.readSettingsBackup(name);
   if (!read.ok) {
-    this.commandRouter.pushToastMessage('error', 'Waveshare 2.8', read.message);
+    this.toast('error', read.key);
     return libQ.resolve();
   }
   const checked = this.validateBackupValues(read.snapshot.values);
   if (!checked.ok) {
-    this.logger.error('[waveshare28] rejected settings backup: ' + checked.message);
-    this.commandRouter.pushToastMessage('error', 'Waveshare 2.8', checked.message);
+    this.logger.error('[waveshare28] rejected settings backup: ' + checked.key);
+    this.toast('error', checked.key);
     return libQ.resolve();
   }
   const before = JSON.parse(this.runTool(['show', '--json']));
@@ -810,27 +825,27 @@ Waveshare28.prototype.restoreSettingsBackup = function (data) {
     this.runTool(['set'].concat(args));
   } catch (e) {
     this.logger.error('[waveshare28] restore set failed: ' + e);
-    this.commandRouter.pushToastMessage('error', 'Waveshare 2.8', 'Failed to restore settings.');
+    this.toast('error', 'TOAST_BACKUP_RESTORE_FAILED');
     return libQ.resolve();
   }
   const after = JSON.parse(this.runTool(['show', '--json']));
-  this.afterSetMaybeReboot(before, after, 'Settings restored.');
+  this.afterSetMaybeReboot(before, after, this.pluginText('TOAST_RESTORED'));
   return this.updateUIConfig();
 };
 
 Waveshare28.prototype.deleteSettingsBackup = function (data) {
   const name = this.sanitizeBackupName(fieldValue(data || {}, 'selected_backup_delete'));
   if (!name) {
-    this.commandRouter.pushToastMessage('error', 'Waveshare 2.8', 'Choose a settings backup.');
+    this.toast('error', 'BACKUP_CHOOSE');
     return libQ.resolve();
   }
   try {
     fs.unlinkSync(this.settingsBackupPath(name));
   } catch (e) {
-    this.commandRouter.pushToastMessage('error', 'Waveshare 2.8', 'That settings backup is not on this device.');
+    this.toast('error', 'BACKUP_MISSING');
     return libQ.resolve();
   }
-  this.commandRouter.pushToastMessage('success', 'Waveshare 2.8', 'Settings backup deleted.');
+  this.toast('success', 'TOAST_BACKUP_DELETED');
   return this.updateUIConfig();
 };
 
@@ -839,12 +854,12 @@ Waveshare28.prototype.runVerify = function () {
   const defer = libQ.defer();
   try {
     const out = self.runTool(['verify'], { quiet: true });
-    self.commandRouter.pushToastMessage('success', 'Waveshare 2.8', 'No drift.');
+    self.toast('success', 'TOAST_NO_DRIFT');
     self.logger.info('[waveshare28] verify:\n' + out);
     defer.resolve();
   } catch (e) {
     const out = (e.stdout || e.message || String(e)).toString();
-    self.commandRouter.pushToastMessage('warning', 'Waveshare 2.8', 'Configuration has drifted. Apply settings to restore.');
+    self.toast('warning', 'TOAST_DRIFT');
     self.logger.warn('[waveshare28] verify:\n' + out);
     defer.resolve();
   }
