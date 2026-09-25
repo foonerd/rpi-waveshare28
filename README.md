@@ -106,6 +106,9 @@ binary dies there with SIGILL.
 Waveshare SKU 27579. ST7789V (ST7789T3) display over 4-wire SPI, Hynitron
 CST328 capacitive touch over I2C, 240(H) x 320(V) native portrait.
 
+The [PIXIS CB-1](https://github.com/PIXISREPO/VOLUMIO-4-TOUCH) is an
+enclosure for this panel. That repository is the build and install guide.
+
 Wiring per the Waveshare wiki, BCM numbering:
 
     MOSI     GPIO10

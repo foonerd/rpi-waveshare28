@@ -28,9 +28,10 @@ Glass behaviour is `docs/UI.md` in the parent repository. Keys are
 
 ## Testing
 
-Peter (PIXIS) did the hands-on work on a Pi 3A+ (portrait and
-landscape, framebuffer) and a Pi Zero 2 W (portrait, SPI): artwork,
-track text, progress and touch.
+Hands-on testing was on the [PIXIS CB-1](https://github.com/PIXISREPO/VOLUMIO-4-TOUCH):
+a Pi 3A+ (portrait and landscape, framebuffer) and a Pi Zero 2 W
+(portrait, SPI). Artwork, track text, progress and touch. That
+repository is the CB-1 build and install guide.
 
 Thank you, Peter.
 
