@@ -552,7 +552,9 @@ plugin installer does not: enable (`onStart`) calls `apply`.
 ## Volumio plugin
 
 `plugin/waveshare28` is store-shaped (`system_controller`, category
-`system_hardware`, armhf, Bookworm).
+`system_hardware`, armhf, Bookworm). The customer write-up for the
+[PIXIS CB-1](https://github.com/PIXISREPO/VOLUMIO-4-TOUCH) is in that
+repository.
 `install.sh` copies `payload/waveshare28-config` and
 `payload/bin/armhf/waveshare28-panel` (crate 1.6.0 musleabihf) into
 `/usr/local/bin` and writes sudoers. It does not run `apply` and does

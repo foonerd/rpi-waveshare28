@@ -49,6 +49,8 @@ const PORTRAIT_ART_MAX: u32 = 188;
 
 pub(crate) const TITLE_FONT: &MonoFont = &FONT_9X15_BOLD;
 pub(crate) const META_FONT: &MonoFont = &FONT_6X10;
+/// Cover box, after the first miss, until the image arrives. Not "failed".
+pub(crate) const ART_WAIT: &str = "Retrieving artwork";
 
 /// Cabinet + cone. 12×10. The mark that was signed off on the volume strip.
 const SPEAKER_W: i32 = 12;
@@ -156,7 +158,8 @@ pub struct Layout {
     pub frame: Rectangle,
     /// Album art.
     pub art: Rectangle,
-    /// Title block (portrait: title only). Tap opens metadata.
+    /// Title block. Portrait scrolls artist and album through this slot.
+    /// Tap opens metadata.
     pub text: Rectangle,
     /// IP ring hit target.
     pub info: Rectangle,
@@ -773,11 +776,12 @@ pub fn draw<D>(
     art: Option<&Art>,
     pane: &TextPane,
     scrub: Option<f32>,
+    art_wait: bool,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    draw_face(target, layout, state, art, pane, scrub)
+    draw_face(target, layout, state, art, pane, scrub, art_wait)
 }
 
 /// Resting face: art, i ring, title block, dock, seek strip.
@@ -788,13 +792,14 @@ pub fn draw_face<D>(
     art: Option<&Art>,
     pane: &TextPane,
     scrub: Option<f32>,
+    art_wait: bool,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
     let pal = layout.pal();
     target.clear(pal.bg)?;
-    draw_art(target, layout, art)?;
+    draw_art(target, layout, art, art_wait)?;
     draw_text(target, face_text_slot(layout), pane, pal)?;
     draw_info_ring(target, layout, pal)?;
     draw_dock(target, layout, state, pal)?;
@@ -816,7 +821,12 @@ where
 /// The picture is scaled to fit rather than to fill, so a non-square cover
 /// leaves margins. Those are painted black rather than left holding whatever
 /// the previous track's art put there.
-pub fn draw_art<D>(target: &mut D, layout: &Layout, art: Option<&Art>) -> Result<(), D::Error>
+pub fn draw_art<D>(
+    target: &mut D,
+    layout: &Layout,
+    art: Option<&Art>,
+    wait: bool,
+) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -836,11 +846,39 @@ where
         }
 
         target.fill_contiguous(&placed, art.px.iter().copied())?;
+    } else if wait {
+        draw_art_wait(target, box_, pal)?;
     } else {
         box_.into_styled(PrimitiveStyle::with_fill(pal.bg))
             .draw(target)?;
     }
 
+    Ok(())
+}
+
+fn draw_art_wait<D>(target: &mut D, box_: Rectangle, pal: Palette) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    box_.into_styled(PrimitiveStyle::with_fill(pal.bg))
+        .draw(target)?;
+    let lines = wrap(ART_WAIT, box_.size.width, META_FONT);
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let line_h = META_FONT.character_size.height as i32;
+    let block = lines.len() as i32 * line_h + (lines.len() as i32 - 1) * LINE_GAP;
+    let mut y = box_.top_left.y + (box_.size.height as i32 - block) / 2;
+    let cx = box_.top_left.x + box_.size.width as i32 / 2;
+    let style = MonoTextStyle::new(META_FONT, pal.meta);
+    let centred = TextStyleBuilder::new()
+        .baseline(Baseline::Top)
+        .alignment(Alignment::Center)
+        .build();
+    for line in &lines {
+        Text::with_text_style(line, Point::new(cx, y), style, centred).draw(target)?;
+        y += line_h + LINE_GAP;
+    }
     Ok(())
 }
 
@@ -1198,8 +1236,14 @@ where
         .draw(target)
 }
 
-/// One centred line of IN format. Too long is clipped, not wrapped: the
-/// slot is one face tall.
+const STREAM_FONT: &MonoFont = &FONT_10X20;
+
+fn stream_cols(width: u32) -> usize {
+    (width / STREAM_FONT.character_size.width).max(1) as usize
+}
+
+/// One centred line of IN format. Too long is clipped, not wrapped.
+/// `STREAM_FONT` is the 20 px face. Seek clocks stay [`META_FONT`].
 fn draw_stream_info<D>(
     target: &mut D,
     bar: Rectangle,
@@ -1213,11 +1257,10 @@ where
         return blank_strip(target, bar, pal);
     };
 
-    let cols = (bar.size.width / META_FONT.character_size.width).max(1) as usize;
-    let shown: String = text.chars().take(cols).collect();
+    let shown: String = text.chars().take(stream_cols(bar.size.width)).collect();
 
     let mut buf = RowBuf::new(bar.size, pal.bg);
-    let style = MonoTextStyle::new(META_FONT, pal.meta);
+    let style = MonoTextStyle::new(STREAM_FONT, pal.meta);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
@@ -1494,6 +1537,79 @@ mod tests {
             slot,
         );
         assert!(pane.offset > 0, "same strings must not restart the scroll");
+    }
+
+    /// Peter's portrait case: one title line, artist and album present.
+    /// The 40 px slot does not grow. A title with no credits stays still.
+    #[test]
+    fn portrait_scrolls_artist_and_album_through_the_title_slot() {
+        let slot = face_text_slot(&Layout::for_rotation(0));
+        assert_eq!(origin(slot), (12, 196, 216, 40));
+        let mut bare = TextPane::default();
+        bare.set("Drive Back.Flac", "", "", slot);
+        assert_eq!(bare.over, 0, "a title with no credits does not scroll");
+        let mut pane = TextPane::default();
+        pane.set("Drive Back.Flac", "Neil Young & Crazy Horse", "Zuma", slot);
+        assert!(
+            pane.over > 0,
+            "title plus artist plus album overflows 40 px"
+        );
+        let mut moved = false;
+        for _ in 0..(HOLD_TICKS as usize + pane.over as usize + 2) {
+            if pane.step() {
+                moved = true;
+            }
+        }
+        assert!(moved);
+        assert!(pane.offset > 0);
+    }
+
+    #[test]
+    fn landscape_short_credits_fit_the_column() {
+        let l = Layout::for_rotation(270);
+        let slot = face_text_slot(&l);
+        assert_eq!(origin(slot), (210, 44, 100, 112));
+        let mut pane = TextPane::default();
+        pane.set("Drive Back.Flac", "Neil Young & Crazy Horse", "Zuma", slot);
+        assert_eq!(pane.over, 0, "landscape column still holds a short track");
+    }
+
+    #[test]
+    fn retrieving_artwork_fits_both_cover_boxes() {
+        let cols = |rot| Layout::for_rotation(rot).art.size.width / META_FONT.character_size.width;
+        let n = ART_WAIT.chars().count() as u32;
+        assert!(n <= cols(0), "portrait {}", cols(0));
+        assert!(n <= cols(270), "landscape {}", cols(270));
+        assert_eq!(
+            wrap(
+                ART_WAIT,
+                cols(0) * META_FONT.character_size.width,
+                META_FONT
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn stream_line_is_twice_the_clock_face_and_fits_the_strip() {
+        assert_eq!(
+            STREAM_FONT.character_size.height,
+            META_FONT.character_size.height * 2
+        );
+        let line = "flac  16 bit  44.1 kHz";
+        for rot in [0u16, 270] {
+            let bar = Layout::for_rotation(rot).progress;
+            assert!(
+                STREAM_FONT.character_size.height <= bar.size.height,
+                "rot {rot}"
+            );
+            assert!(
+                line.chars().count() <= stream_cols(bar.size.width),
+                "rot {rot} cols {}",
+                stream_cols(bar.size.width)
+            );
+        }
     }
 
     #[test]

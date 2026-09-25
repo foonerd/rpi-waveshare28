@@ -49,8 +49,9 @@ for `volumio.service`. Without it the panel is dark for most of a minute, and
 the address is the one thing someone needs before the player is reachable.
 
 After `/status` is `ready` and the first `getState` succeeds, it shows the
-player: album art, a two-line title (portrait is title only; landscape
-still paints artist and album), a dock (controls / volume / metadata)
+player: album art, title, artist and album (portrait scrolls the three
+through the title slot; landscape shows them in the column), a dock
+(controls / volume / metadata)
 and a seek slot. The slot defaults to elapsed / bar / total when
 `getState` publishes a duration; a tap cycles to IN stream fields
 (`strip_portrait` / `strip_landscape`). Colours come from a named theme

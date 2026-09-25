@@ -141,6 +141,12 @@ impl ArtLoader {
         }
     }
 
+    /// True after this URL has missed at least once and has not succeeded since.
+    /// A new URL clears it. The face uses this for "Retrieving artwork".
+    pub fn retrieving(&self) -> bool {
+        self.gate.failed
+    }
+
     /// Collect a decoded cover if one is ready. Never blocks.
     ///
     /// `Some(None)` means the fetch or decode failed and the caller should
@@ -385,6 +391,20 @@ mod tests {
         gate.completed(false, t0);
         assert!(gate.should_send("/a", t0 + Duration::from_secs(2)));
         assert!(!gate.should_send("/a", t0 + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn retrieving_is_the_gap_after_a_miss_until_the_cover_arrives() {
+        let mut gate = FetchGate::new();
+        let t0 = Instant::now();
+        assert!(gate.should_send("/a.jpg", t0));
+        assert!(!gate.failed, "the first try is not a wait message");
+        gate.completed(false, t0);
+        assert!(gate.failed);
+        assert!(!gate.should_send("/a.jpg", t0 + Duration::from_secs(1)));
+        assert!(gate.failed, "backoff still owes the cover");
+        gate.completed(true, t0 + Duration::from_secs(2));
+        assert!(!gate.failed);
     }
 
     #[test]

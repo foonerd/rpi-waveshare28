@@ -234,19 +234,10 @@ fn run(cfg: Config) -> Result<()> {
             shown = None;
         }
 
-        let portrait = layout.frame.size.height > layout.frame.size.width;
         pane.set(
             current.title.as_deref().unwrap_or(""),
-            if portrait {
-                ""
-            } else {
-                current.artist.as_deref().unwrap_or("")
-            },
-            if portrait {
-                ""
-            } else {
-                current.album.as_deref().unwrap_or("")
-            },
+            current.artist.as_deref().unwrap_or(""),
+            current.album.as_deref().unwrap_or(""),
             face_text_slot(&layout),
         );
 
@@ -283,7 +274,13 @@ fn run(cfg: Config) -> Result<()> {
                     )?;
                     hold_shown = hold_left;
                 } else {
-                    panel.render(&current, art.as_ref(), &pane, scrub)?;
+                    panel.render(
+                        &current,
+                        art.as_ref(),
+                        &pane,
+                        scrub,
+                        current.album_art.is_some() && loader.retrieving(),
+                    )?;
                     hold_shown = None;
                 }
                 shown = Some(current.clone());
