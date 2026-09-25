@@ -84,7 +84,10 @@ Hairlines are 1 px in `dim`.
 
 Art is the leftover square after title + dock + seek, capped at 188 so it
 stays off the ring. `strip=off` hides seek and grows that square (still
-capped).
+capped). After the first miss, and until the image arrives, the box says
+"Retrieving artwork". A cover that arrives on the first try never shows
+that line. The same words are used in landscape. No cover URL stays an
+empty box.
 
 ---
 

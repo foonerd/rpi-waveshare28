@@ -274,7 +274,13 @@ fn run(cfg: Config) -> Result<()> {
                     )?;
                     hold_shown = hold_left;
                 } else {
-                    panel.render(&current, art.as_ref(), &pane, scrub)?;
+                    panel.render(
+                        &current,
+                        art.as_ref(),
+                        &pane,
+                        scrub,
+                        current.album_art.is_some() && loader.retrieving(),
+                    )?;
                     hold_shown = None;
                 }
                 shown = Some(current.clone());

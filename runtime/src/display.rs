@@ -147,8 +147,17 @@ impl Panel {
         art: Option<&Art>,
         pane: &TextPane,
         scrub: Option<f32>,
+        art_wait: bool,
     ) -> Result<()> {
-        on_surface!(self, |s| ui::draw(s, &self.layout, state, art, pane, scrub))
+        on_surface!(self, |s| ui::draw(
+            s,
+            &self.layout,
+            state,
+            art,
+            pane,
+            scrub,
+            art_wait
+        ))
     }
 
     /// Repaint the title block only. A ticker step must not clear the face.
