@@ -1,7 +1,7 @@
 {
   "name": "waveshare28",
   "version": "1.0.0",
-  "description": "Settings UI for the Waveshare 2.8 inch SPI panel. Installs waveshare28-config from the plugin payload and scopes every control to the detected Raspberry Pi.",
+  "description": "Settings for the Waveshare 2.8 inch SPI touch panel (SKU 27579). Installs the panel program and waveshare28-config from this plugin's payload. Shows only the controls that apply to this Raspberry Pi.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -12,8 +12,8 @@
     "prettyName": "Waveshare 2.8 SPI Panel",
     "icon": "fa-desktop",
     "plugin_type": "system_controller",
-    "details": "Installs the Waveshare 2.8 inch SPI panel tool from the plugin payload and exposes only the settings that apply to this Raspberry Pi. armv6 boards (Pi 1, original Pi Zero) are not supported. Never edits volumioconfig.txt.",
-    "changelog": "Panel + UI sections. Theme, boot type and strip are live. Payload ships crate 1.6.0 armhf. Never edits volumioconfig.txt.",
+    "details": "Waveshare 2.8 inch SPI touch panel for Volumio. The plugin installs its own panel program (armhf) and settings tool, then shows only the controls for this board. Panel: rotation, SPI speed, and backend. Console appears only for the framebuffer backend. HDMI appears only on a Pi 4 with framebuffer. A Pi 3A+ shows a read-only KMS line; other boards do not. UI: theme, boot address text, and the track strip. Cover art is not recoloured. Bar spacing is stored and does not move the player layout. Enable applies the setup. Disable removes the live screen setup and keeps /boot/waveshare28.conf. Does not edit volumioconfig.txt. Pi 1 and the original Pi Zero are not supported.",
+    "changelog": "First store release. Ships the panel program from this plugin's payload. Settings are Panel and UI.",
     "categories": [
       "system_hardware"
     ],
