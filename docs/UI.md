@@ -34,15 +34,18 @@ Controls is the one pulled exception: ON uses `accent` (orange on Ink).
 | face | stock font | where |
 |---|---|---|
 | title | `FONT_9X15_BOLD` | resting-face title; volume readout |
-| meta | `FONT_6X10` | face clocks, headers, IP letters, landscape artist/album |
+| meta | `FONT_6X10` | face clocks, headers, IP letters, artist and album |
+| stream | `FONT_10X20` | the stream strip, both orientations. Seek clocks stay meta |
 | surface | `FONT_10X20` | Status and Metadata body — leftover height, both orientations |
 
 `FONT_10X20` is the largest stock face. IPv6 wraps; nothing is 2× scaled.
 `status_text_*=large` still applies to the **boot** overlay only.
 
-Portrait face shows **title only** (two lines, 40 px). Artist and album
-live on the Metadata surface. Landscape still paints title / artist / album
-in the 120 px column.
+Portrait title slot stays 40 px. A track with artist and album is taller
+than that slot, so the block scrolls: title, then artist, then album.
+A title with no credits stays still. The Metadata surface still has the
+full stack. Landscape paints the same three fields in the column; a
+short track fits there without scrolling.
 
 Status / Metadata line caps come from leftover body height (same weights
 both ways). Portrait is taller, so it keeps more title lines.

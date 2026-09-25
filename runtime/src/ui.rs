@@ -156,7 +156,8 @@ pub struct Layout {
     pub frame: Rectangle,
     /// Album art.
     pub art: Rectangle,
-    /// Title block (portrait: title only). Tap opens metadata.
+    /// Title block. Portrait scrolls artist and album through this slot.
+    /// Tap opens metadata.
     pub text: Rectangle,
     /// IP ring hit target.
     pub info: Rectangle,
@@ -1198,8 +1199,14 @@ where
         .draw(target)
 }
 
-/// One centred line of IN format. Too long is clipped, not wrapped: the
-/// slot is one face tall.
+const STREAM_FONT: &MonoFont = &FONT_10X20;
+
+fn stream_cols(width: u32) -> usize {
+    (width / STREAM_FONT.character_size.width).max(1) as usize
+}
+
+/// One centred line of IN format. Too long is clipped, not wrapped.
+/// `STREAM_FONT` is the 20 px face. Seek clocks stay [`META_FONT`].
 fn draw_stream_info<D>(
     target: &mut D,
     bar: Rectangle,
@@ -1213,11 +1220,10 @@ where
         return blank_strip(target, bar, pal);
     };
 
-    let cols = (bar.size.width / META_FONT.character_size.width).max(1) as usize;
-    let shown: String = text.chars().take(cols).collect();
+    let shown: String = text.chars().take(stream_cols(bar.size.width)).collect();
 
     let mut buf = RowBuf::new(bar.size, pal.bg);
-    let style = MonoTextStyle::new(META_FONT, pal.meta);
+    let style = MonoTextStyle::new(STREAM_FONT, pal.meta);
     let centred = TextStyleBuilder::new()
         .baseline(Baseline::Middle)
         .alignment(Alignment::Center)
@@ -1494,6 +1500,62 @@ mod tests {
             slot,
         );
         assert!(pane.offset > 0, "same strings must not restart the scroll");
+    }
+
+    /// Peter's portrait case: one title line, artist and album present.
+    /// The 40 px slot does not grow. A title with no credits stays still.
+    #[test]
+    fn portrait_scrolls_artist_and_album_through_the_title_slot() {
+        let slot = face_text_slot(&Layout::for_rotation(0));
+        assert_eq!(origin(slot), (12, 196, 216, 40));
+        let mut bare = TextPane::default();
+        bare.set("Drive Back.Flac", "", "", slot);
+        assert_eq!(bare.over, 0, "a title with no credits does not scroll");
+        let mut pane = TextPane::default();
+        pane.set("Drive Back.Flac", "Neil Young & Crazy Horse", "Zuma", slot);
+        assert!(
+            pane.over > 0,
+            "title plus artist plus album overflows 40 px"
+        );
+        let mut moved = false;
+        for _ in 0..(HOLD_TICKS as usize + pane.over as usize + 2) {
+            if pane.step() {
+                moved = true;
+            }
+        }
+        assert!(moved);
+        assert!(pane.offset > 0);
+    }
+
+    #[test]
+    fn landscape_short_credits_fit_the_column() {
+        let l = Layout::for_rotation(270);
+        let slot = face_text_slot(&l);
+        assert_eq!(origin(slot), (210, 44, 100, 112));
+        let mut pane = TextPane::default();
+        pane.set("Drive Back.Flac", "Neil Young & Crazy Horse", "Zuma", slot);
+        assert_eq!(pane.over, 0, "landscape column still holds a short track");
+    }
+
+    #[test]
+    fn stream_line_is_twice_the_clock_face_and_fits_the_strip() {
+        assert_eq!(
+            STREAM_FONT.character_size.height,
+            META_FONT.character_size.height * 2
+        );
+        let line = "flac  16 bit  44.1 kHz";
+        for rot in [0u16, 270] {
+            let bar = Layout::for_rotation(rot).progress;
+            assert!(
+                STREAM_FONT.character_size.height <= bar.size.height,
+                "rot {rot}"
+            );
+            assert!(
+                line.chars().count() <= stream_cols(bar.size.width),
+                "rot {rot} cols {}",
+                stream_cols(bar.size.width)
+            );
+        }
     }
 
     #[test]
